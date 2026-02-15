@@ -265,10 +265,20 @@ class MailcowAPI:
         try:
             data = await self._make_request("/api/v1/get/status/version")
             
-            if isinstance(data, list) and len(data) > 0:
-                return data[0].get('version', 'unknown')
+            # Handle different response formats
+            if isinstance(data, str):
+                return data.strip()
             
-            logger.warning(f"Unexpected version response format: {type(data)}")
+            if isinstance(data, dict):
+                return data.get('version', 'unknown')
+                
+            if isinstance(data, list):
+                if len(data) > 0:
+                    if isinstance(data[0], dict):
+                        return data[0].get('version', 'unknown')
+                    return str(data[0])
+            
+            logger.warning(f"Unexpected version response format: {type(data)} - {data}")
             return 'unknown'
             
         except MailcowAPIError as e:

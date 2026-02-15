@@ -86,16 +86,70 @@ def get_cached_server_ip() -> str:
     return _server_ip_cache
 
 
+async def resolve_dns_with_fallback(query: str, record_type: str = 'TXT', timeout: int = 5):
+    """
+    Resolve DNS query with fallback to multiple DNS servers
+    
+    Args:
+        query: DNS query (domain name)
+        record_type: DNS record type ('TXT', 'A', 'MX', etc.)
+        timeout: Timeout in seconds for each query
+        
+    Returns:
+        DNS answer object
+        
+    Raises:
+        dns.resolver.NXDOMAIN: If domain doesn't exist (after trying all servers)
+        dns.resolver.NoAnswer: If no answer (after trying all servers)
+        Exception: If all DNS servers fail
+    """
+    # DNS servers to try in order
+    dns_servers_list = [
+        ['8.8.8.8', '8.8.4.4'],  # Google DNS (primary)
+        ['1.1.1.1', '1.0.0.1'],  # Cloudflare DNS (fallback)
+    ]
+    
+    last_error = None
+    
+    # Try each DNS server list until we get a valid response
+    for dns_servers in dns_servers_list:
+        try:
+            resolver = dns.asyncresolver.Resolver()
+            resolver.nameservers = dns_servers
+            resolver.timeout = timeout
+            resolver.lifetime = timeout
+            
+            answers = await resolver.resolve(query, record_type)
+            return answers
+            
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer) as e:
+            # NXDOMAIN and NoAnswer are valid responses - return them
+            raise
+        except (dns.resolver.NoNameservers, dns.exception.Timeout) as e:
+            # DNS server error or timeout - try next server
+            last_error = str(e)
+            logger.debug(f"DNS error from {dns_servers[0]} for {query}: {e} - trying next DNS server")
+            continue
+        except Exception as e:
+            # Other errors - try next server
+            last_error = str(e)
+            logger.debug(f"Error from {dns_servers[0]} for {query}: {e} - trying next DNS server")
+            continue
+    
+    # If we get here, all DNS servers failed
+    error_msg = f"All DNS servers failed for {query}"
+    if last_error:
+        error_msg += f" - {last_error}"
+    logger.warning(error_msg)
+    raise Exception(error_msg)
+
+
 async def check_spf_record(domain: str) -> Dict[str, Any]:
     """
     Check SPF record for a domain with full validation
     """
     try:
-        resolver = dns.asyncresolver.Resolver()
-        resolver.timeout = 5
-        resolver.lifetime = 5
-        
-        answers = await resolver.resolve(domain, 'TXT')
+        answers = await resolve_dns_with_fallback(domain, 'TXT', timeout=5)
         
         spf_records = []
         for rdata in answers:
@@ -181,7 +235,7 @@ async def check_spf_record(domain: str) -> Dict[str, Any]:
         
         includes = [m.replace('include:', '') for m in mechanisms if m.startswith('include:')]
         
-        dns_lookup_count = await count_spf_dns_lookups(domain, spf_record, resolver)
+        dns_lookup_count = await count_spf_dns_lookups(domain, spf_record, None)
         
         global _server_ip_cache
         server_ip = _server_ip_cache
@@ -193,7 +247,7 @@ async def check_spf_record(domain: str) -> Dict[str, Any]:
         authorization_method = None
         
         if server_ip:
-            server_authorized, authorization_method = await check_ip_in_spf(domain, server_ip, spf_record, resolver)
+            server_authorized, authorization_method = await check_ip_in_spf(domain, server_ip, spf_record, None)
         
         warnings = []
         
@@ -278,7 +332,7 @@ async def check_spf_record(domain: str) -> Dict[str, Any]:
         }
 
 
-async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolver, visited_domains: set = None, depth: int = 0) -> tuple:
+async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolver=None, visited_domains: set = None, depth: int = 0) -> tuple:
     """
     Check if IP is authorized in SPF record recursively
     Returns: (authorized: bool, method: str or None)
@@ -315,7 +369,7 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
         elif clean_part in ['a'] or clean_part.startswith('a:'):
             check_domain = domain if clean_part == 'a' else clean_part.split(':', 1)[1]
             try:
-                a_records = await resolver.resolve(check_domain, 'A')
+                a_records = await resolve_dns_with_fallback(check_domain, 'A', timeout=5)
                 for rdata in a_records:
                     if str(rdata) == ip_to_check:
                         return True, f'a:{check_domain}' if clean_part.startswith('a:') else 'a'
@@ -325,10 +379,10 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
         elif clean_part in ['mx'] or clean_part.startswith('mx:'):
             check_domain = domain if clean_part == 'mx' else clean_part.split(':', 1)[1]
             try:
-                mx_records = await resolver.resolve(check_domain, 'MX')
+                mx_records = await resolve_dns_with_fallback(check_domain, 'MX', timeout=5)
                 for mx in mx_records:
                     try:
-                        mx_a_records = await resolver.resolve(str(mx.exchange), 'A')
+                        mx_a_records = await resolve_dns_with_fallback(str(mx.exchange), 'A', timeout=5)
                         for rdata in mx_a_records:
                             if str(rdata) == ip_to_check:
                                 return True, f'mx:{check_domain}' if clean_part.startswith('mx:') else 'mx'
@@ -340,7 +394,7 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
         elif clean_part.startswith('include:'):
             include_domain = clean_part.replace('include:', '')
             try:
-                include_answers = await resolver.resolve(include_domain, 'TXT')
+                include_answers = await resolve_dns_with_fallback(include_domain, 'TXT', timeout=5)
                 for rdata in include_answers:
                     include_spf = b''.join(rdata.strings).decode('utf-8')
                     if include_spf.startswith('v=spf1'):
@@ -360,7 +414,7 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
         elif clean_part.startswith('redirect='):
             redirect_domain = clean_part.replace('redirect=', '')
             try:
-                redirect_answers = await resolver.resolve(redirect_domain, 'TXT')
+                redirect_answers = await resolve_dns_with_fallback(redirect_domain, 'TXT', timeout=5)
                 for rdata in redirect_answers:
                     redirect_spf = b''.join(rdata.strings).decode('utf-8')
                     if redirect_spf.startswith('v=spf1'):
@@ -368,7 +422,7 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
                             redirect_domain, 
                             ip_to_check, 
                             redirect_spf, 
-                            resolver, 
+                            None,  # resolver parameter no longer needed
                             visited_domains.copy(),
                             depth + 1
                         )
@@ -380,7 +434,7 @@ async def check_ip_in_spf(domain: str, ip_to_check: str, spf_record: str, resolv
     return False, None
 
 
-async def count_spf_dns_lookups(domain: str, spf_record: str, resolver, visited_domains: set = None, depth: int = 0) -> int:
+async def count_spf_dns_lookups(domain: str, spf_record: str, resolver=None, visited_domains: set = None, depth: int = 0) -> int:
     """
     Count DNS lookups in SPF record recursively
     SPF limit is 10 DNS lookups
@@ -406,7 +460,7 @@ async def count_spf_dns_lookups(domain: str, spf_record: str, resolver, visited_
             lookup_count += 1
             include_domain = clean_part.replace('include:', '')
             try:
-                include_answers = await resolver.resolve(include_domain, 'TXT')
+                include_answers = await resolve_dns_with_fallback(include_domain, 'TXT', timeout=5)
                 for rdata in include_answers:
                     include_spf = b''.join(rdata.strings).decode('utf-8')
                     if include_spf.startswith('v=spf1'):
@@ -640,12 +694,8 @@ async def check_dkim_record(domain: str) -> Dict[str, Any]:
         dkim_domain = f"{selector}._domainkey.{domain}"
         
         # Query DKIM TXT record
-        resolver = dns.asyncresolver.Resolver()
-        resolver.timeout = 5
-        resolver.lifetime = 5
-        
         try:
-            answers = await resolver.resolve(dkim_domain, 'TXT')
+            answers = await resolve_dns_with_fallback(dkim_domain, 'TXT', timeout=5)
             
             # Get actual DKIM record
             actual_record = ''
@@ -787,12 +837,8 @@ async def check_dmarc_record(domain: str) -> Dict[str, Any]:
     try:
         dmarc_domain = f"_dmarc.{domain}"
         
-        resolver = dns.asyncresolver.Resolver()
-        resolver.timeout = 5
-        resolver.lifetime = 5
-        
         # Query DMARC TXT record
-        answers = await resolver.resolve(dmarc_domain, 'TXT')
+        answers = await resolve_dns_with_fallback(dmarc_domain, 'TXT', timeout=5)
         
         # Get DMARC record
         dmarc_record = None

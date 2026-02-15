@@ -25,7 +25,8 @@ from .routers import (
     mailbox_stats as mailbox_stats_router,
     documentation,
     blacklist as blacklist_router,
-    reporting # New router
+    reporting,
+    auth as auth_router,
 )
 from .migrations import run_migrations
 from .auth import BasicAuthMiddleware
@@ -60,12 +61,20 @@ async def lifespan(app: FastAPI):
     if settings.blacklist_emails_list:
         logger.info(f"Blacklist enabled with {len(settings.blacklist_emails_list)} email(s)")
     
-    if settings.auth_enabled:
-        logger.info("Basic authentication is ENABLED")
-        if not settings.auth_password:
-            logger.warning("WARNING: Authentication enabled but password not set!")
+    if settings.is_authentication_enabled:
+        auth_methods = []
+        if settings.is_basic_auth_enabled:
+            auth_methods.append("Basic Auth")
+            if not settings.auth_password:
+                logger.warning("WARNING: Basic Auth enabled but password not set!")
+        if settings.is_oauth2_enabled:
+            auth_methods.append(f"OAuth2 ({settings.oauth2_provider_name})")
+            if not settings.oauth2_client_id or not settings.oauth2_client_secret:
+                logger.warning("WARNING: OAuth2 enabled but client credentials not configured!")
+        
+        logger.info(f"Authentication is ENABLED: {', '.join(auth_methods)}")
     else:
-        logger.info("Basic authentication is DISABLED")
+        logger.info("Authentication is DISABLED")
     
     # Initialize database
     try:
@@ -170,6 +179,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth_router.router, prefix="/api", tags=["Authentication"])
 app.include_router(logs.router, prefix="/api", tags=["Logs"])
 app.include_router(stats.router, prefix="/api", tags=["Statistics"])
 app.include_router(export_router.router, prefix="/api", tags=["Export"])
@@ -250,7 +260,9 @@ async def app_info():
         "app_title": settings.app_title,
         "app_logo_url": settings.app_logo_url,
         "blacklist_count": len(settings.blacklist_emails_list),
-        "auth_enabled": settings.auth_enabled
+        "auth_enabled": settings.is_authentication_enabled,
+        "basic_auth_enabled": settings.is_basic_auth_enabled,
+        "oauth2_enabled": settings.is_oauth2_enabled,
     }
 
 

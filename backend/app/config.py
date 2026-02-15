@@ -78,7 +78,11 @@ class Settings(BaseSettings):
     # Authentication Configuration
     auth_enabled: bool = Field(
         default=False,
-        description="Enable basic authentication"
+        description="Enable authentication (deprecated, use BASIC_AUTH_ENABLED and/or OAUTH2_ENABLED)"
+    )
+    basic_auth_enabled: bool = Field(
+        default=False,
+        description="Enable basic HTTP authentication"
     )
     auth_username: str = Field(
         default="admin",
@@ -86,7 +90,61 @@ class Settings(BaseSettings):
     )
     auth_password: str = Field(
         default="",
-        description="Basic auth password (required if auth_enabled=True)"
+        description="Basic auth password (required if basic_auth_enabled=True)"
+    )
+    
+    # OAuth2/OIDC Authentication Configuration
+    oauth2_enabled: bool = Field(
+        default=False,
+        description="Enable OAuth2/OIDC authentication"
+    )
+    oauth2_provider_name: str = Field(
+        default="OAuth2 Provider",
+        description="Display name for the OAuth2 provider (e.g., 'Mailcow', 'Keycloak')"
+    )
+    oauth2_issuer_url: Optional[str] = Field(
+        default=None,
+        description="OAuth2/OIDC issuer URL for discovery (e.g., https://mail.example.com or https://keycloak.example.com/realms/myrealm)"
+    )
+    oauth2_authorization_url: Optional[str] = Field(
+        default=None,
+        description="OAuth2 authorization endpoint (auto-discovered if issuer_url provided)"
+    )
+    oauth2_token_url: Optional[str] = Field(
+        default=None,
+        description="OAuth2 token endpoint (auto-discovered if issuer_url provided)"
+    )
+    oauth2_userinfo_url: Optional[str] = Field(
+        default=None,
+        description="OAuth2 UserInfo endpoint (auto-discovered if issuer_url provided)"
+    )
+    oauth2_client_id: Optional[str] = Field(
+        default=None,
+        description="OAuth2 client ID from provider"
+    )
+    oauth2_client_secret: Optional[str] = Field(
+        default=None,
+        description="OAuth2 client secret from provider"
+    )
+    oauth2_redirect_uri: Optional[str] = Field(
+        default=None,
+        description="OAuth2 redirect URI callback (e.g., https://your-app.example.com/api/auth/callback)"
+    )
+    oauth2_scopes: str = Field(
+        default="openid profile email",
+        description="OAuth2 scopes to request"
+    )
+    oauth2_use_oidc_discovery: bool = Field(
+        default=True,
+        description="Enable OIDC discovery (uses .well-known/openid-configuration)"
+    )
+    session_secret_key: str = Field(
+        default="",
+        description="Secret key for signing session cookies (required if oauth2_enabled=True)"
+    )
+    session_expiry_hours: int = Field(
+        default=24,
+        description="Session expiration time in hours"
     )
 
     # DMARC configuration
@@ -280,6 +338,24 @@ class Settings(BaseSettings):
         return v
     
     @property
+    def is_basic_auth_enabled(self) -> bool:
+        """Check if Basic Auth is enabled (with backward compatibility)"""
+        # For backward compatibility: if AUTH_ENABLED is set, use it
+        if self.auth_enabled:
+            return True
+        return self.basic_auth_enabled
+    
+    @property
+    def is_oauth2_enabled(self) -> bool:
+        """Check if OAuth2 is enabled"""
+        return self.oauth2_enabled
+    
+    @property
+    def is_authentication_enabled(self) -> bool:
+        """Check if any authentication is enabled"""
+        return self.is_basic_auth_enabled or self.is_oauth2_enabled
+    
+    @property
     def local_domains_list(self) -> List[str]:
         """Get active domains from mailcow API cache"""
         global _cached_active_domains
@@ -346,22 +422,53 @@ def setup_logging():
     for handler in root.handlers[:]:
         root.removeHandler(handler)
     
-    log_format = '%(levelname)s - %(message)s'
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    date_format = '%Y-%m-%d %H:%M:%S'
     
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level),
-        format=log_format,
-        force=True
-    )
+    # Console Handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+    root.addHandler(console_handler)
     
+    # File Handler (logs to /app/data/container.log)
+    try:
+        from logging.handlers import RotatingFileHandler
+        import os
+        
+        # Ensure directory exists
+        log_dir = "/app/data"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir, exist_ok=True)
+            
+        log_file = os.path.join(log_dir, "container.log")
+        
+        # Rotate logs: 5MB max size, keep 3 backup files
+        file_handler = RotatingFileHandler(
+            log_file, 
+            maxBytes=5*1024*1024, 
+            backupCount=3,
+            encoding='utf-8'
+        )
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+        root.addHandler(file_handler)
+        
+    except Exception as e:
+        print(f"Failed to setup file logging: {e}")
+    
+    root.setLevel(getattr(logging, settings.log_level))
+    
+    # Set levels for third-party libraries
     logging.getLogger('httpx').setLevel(logging.ERROR)
     logging.getLogger('httpcore').setLevel(logging.ERROR)
     logging.getLogger('urllib3').setLevel(logging.ERROR)
     logging.getLogger('asyncio').setLevel(logging.ERROR)
     logging.getLogger('apscheduler').setLevel(logging.WARNING)
+    logging.getLogger('watchfiles').setLevel(logging.WARNING)
     
     if settings.debug:
-        logger.warning("Debug mode is enabled")
+        root.warning("Debug mode is enabled")
+        
+    root.info("Logging initialized (Console + File)")
 
 
 # Initialize logging

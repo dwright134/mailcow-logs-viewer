@@ -1,5 +1,6 @@
 """
-Basic HTTP Authentication Middleware for FastAPI
+Authentication Middleware for FastAPI
+Supports both OAuth2 (session cookies) and Basic Auth
 Protects ALL endpoints when authentication is enabled
 """
 import logging
@@ -11,6 +12,7 @@ import secrets
 import base64
 
 from .config import settings
+from .session import get_session_from_request, SESSION_COOKIE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -41,20 +43,61 @@ def verify_credentials(username: str, password: str) -> bool:
 
 class BasicAuthMiddleware(BaseHTTPMiddleware):
     """
-    Middleware that enforces HTTP Basic Authentication on ALL requests
+    Middleware that enforces authentication on ALL requests
+    Supports both OAuth2 (session cookies) and Basic Auth
     when auth_enabled is True
     """
     
     async def dispatch(self, request: Request, call_next):
         # Skip authentication check if disabled
-        if not settings.auth_enabled:
+        if not settings.is_authentication_enabled:
             return await call_next(request)
         
-        # Allow access to login page, static files, health check, and info endpoint without authentication
+        path = request.url.path
+        
+        # Allow access to login page, static files, health check, info endpoint, and auth endpoints without authentication
         # Health check endpoint must be accessible for Docker health monitoring
         # Info endpoint is used to check if authentication is enabled
-        path = request.url.path
-        if path == "/login" or path.startswith("/static/") or path == "/api/health" or path == "/api/info":
+        # Auth endpoints handle their own authentication
+        public_paths = [
+            "/login",
+            "/static/",
+            "/api/health",
+            "/api/info",
+            "/api/auth/login",
+            "/api/auth/callback",
+            "/api/auth/provider-info",
+        ]
+        
+        if any(path == p or path.startswith(p) for p in public_paths):
+            return await call_next(request)
+        
+        # Check OAuth2 session first (if enabled)
+        if settings.is_oauth2_enabled:
+            session_data = get_session_from_request(request)
+            if session_data:
+                # OAuth2 session is valid, proceed
+                return await call_next(request)
+        
+        # If OAuth2 is enabled but Basic Auth is not, require OAuth2
+        if settings.is_oauth2_enabled and not settings.is_basic_auth_enabled:
+            # OAuth2 only mode - redirect to login or return 401
+            if path.startswith("/api/"):
+                return Response(
+                    content="Authentication required",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                )
+            # For frontend routes, allow through (frontend will redirect)
+            return await call_next(request)
+        
+        # Fall back to Basic Auth (if enabled)
+        if not settings.is_basic_auth_enabled:
+            # No authentication method available
+            if path.startswith("/api/"):
+                return Response(
+                    content="Authentication required",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                )
             return await call_next(request)
         
         # Check if password is configured

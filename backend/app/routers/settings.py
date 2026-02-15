@@ -115,8 +115,11 @@ async def get_settings_info(db: Session = Depends(get_db)):
                 "max_search_results": settings.max_search_results,
                 "csv_export_limit": settings.csv_export_limit,
                 "scheduler_workers": settings.scheduler_workers,
-                "auth_enabled": settings.auth_enabled,
-                "auth_username": settings.auth_username if settings.auth_enabled else None,
+                "auth_enabled": settings.is_authentication_enabled,
+                "basic_auth_enabled": settings.is_basic_auth_enabled,
+                "oauth2_enabled": settings.is_oauth2_enabled,
+                "auth_username": settings.auth_username if settings.is_basic_auth_enabled else None,
+                "oauth2_provider_name": settings.oauth2_provider_name if settings.is_oauth2_enabled else None,
                 "maxmind_status": await validate_maxmind_license()
             },
             "import_status": {

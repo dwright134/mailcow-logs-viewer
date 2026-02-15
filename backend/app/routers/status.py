@@ -3,13 +3,16 @@ API endpoints for system status and health monitoring
 """
 import logging
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any
+from sqlalchemy.orm import Session
 
 from ..mailcow_api import mailcow_api
 from ..version import __version__
 from ..scheduler import check_app_version_update, get_app_version_cache
+from ..database import get_db
+from ..models import KnownContainer
 
 logger = logging.getLogger(__name__)
 
@@ -24,36 +27,65 @@ version_cache = {
     "changelog": None
 }
 
-@router.get("/status/containers")
-async def get_containers_status():
+async def _get_containers_status_internal(db: Session):
     """
-    Get status of all mailcow containers
-    Returns simplified container info: name (without -mailcow), state, started_at
+    Internal function to get container status with explicit db session
     """
     try:
+        # Get containers from API
         containers_data = await mailcow_api.get_status_containers()
         
-        if not containers_data or len(containers_data) == 0:
-            return {"containers": {}, "summary": {"running": 0, "stopped": 0, "total": 0}}
-        
         # Extract the containers dict from the list
-        containers_dict = containers_data[0] if isinstance(containers_data, list) else containers_data
+        containers_dict = {}
+        if containers_data and len(containers_data) > 0:
+            containers_dict = containers_data[0] if isinstance(containers_data, list) else containers_data
+        
+        # Load known containers from database
+        known_containers = {kc.container_name: kc for kc in db.query(KnownContainer).all()}
+        
+        # Track which containers are active (appear in API response)
+        active_container_names = set(containers_dict.keys())
+        current_time = datetime.utcnow()
         
         # Build simplified response
         simplified_containers = {}
         running_count = 0
         stopped_count = 0
         
+        # Process containers from API (active containers)
         for container_key, info in containers_dict.items():
-            # Get state
+            # Get state and normalize (handle None, empty string, etc.)
             state = info.get('state', 'unknown')
+            if state is None or state == '':
+                state = 'unknown'
+            else:
+                state = str(state).lower().strip()
+            
+            # Simplify container name (remove -mailcow suffix)
+            display_name = container_key.replace('-mailcow', '')
+            
+            # Update or create known container
+            if container_key in known_containers:
+                known_container = known_containers[container_key]
+                known_container.last_seen = current_time
+                known_container.updated_at = current_time
+                if known_container.display_name != display_name:
+                    known_container.display_name = display_name
+            else:
+                # New container - add to database
+                known_container = KnownContainer(
+                    container_name=container_key,
+                    display_name=display_name,
+                    last_seen=current_time
+                )
+                db.add(known_container)
+                known_containers[container_key] = known_container
+            
+            # Count containers: only 'running' is considered running, everything else is stopped
             if state == 'running':
                 running_count += 1
             else:
                 stopped_count += 1
-            
-            # Simplify container name (remove -mailcow suffix)
-            display_name = container_key.replace('-mailcow', '')
             
             # Build simplified entry
             simplified_containers[container_key] = {
@@ -61,6 +93,27 @@ async def get_containers_status():
                 "state": state,
                 "started_at": info.get('started_at', None)
             }
+        
+        # Process known containers that are not in API response (stopped containers)
+        for container_key, known_container in known_containers.items():
+            if container_key not in active_container_names:
+                # Container is known but not in API response - it's stopped
+                display_name = known_container.display_name
+                
+                simplified_containers[container_key] = {
+                    "name": display_name,
+                    "state": "stopped",
+                    "started_at": None
+                }
+                stopped_count += 1
+        
+        # Commit database changes
+        try:
+            db.commit()
+        except Exception as db_error:
+            logger.error(f"Error committing container cache changes: {db_error}")
+            db.rollback()
+            # Continue without cache update - still return the results
         
         return {
             "containers": simplified_containers,
@@ -73,7 +126,27 @@ async def get_containers_status():
         
     except Exception as e:
         logger.error(f"Error fetching container status: {e}", exc_info=True)
+        # Try to rollback if there's a DB error
+        try:
+            db.rollback()
+        except:
+            pass
+        # Re-raise the exception - let the caller handle HTTPException
+        raise
+
+
+@router.get("/status/containers")
+async def get_containers_status(db: Session = Depends(get_db)):
+    """
+    Get status of all mailcow containers
+    Returns simplified container info: name (without -mailcow), state, started_at
+    Uses database cache to track stopped containers that don't appear in API response
+    """
+    try:
+        return await _get_containers_status_internal(db)
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch container status: {str(e)}")
+
 
 @router.get("/status/storage")
 async def get_storage_status():
@@ -103,7 +176,7 @@ async def get_storage_status():
         raise HTTPException(status_code=500, detail=f"Failed to fetch storage status: {str(e)}")
 
 @router.get("/status/version")
-async def get_version_status():
+async def get_version_status(force: bool = Query(False, description="Force a fresh version check")):
     """
     Get current mailcow version and check for updates
     Checks GitHub once per day and caches the result
@@ -111,9 +184,10 @@ async def get_version_status():
     try:
         global version_cache
         
-        # Check if we need to refresh the cache (once per day)
+        # Check if we need to refresh the cache (once per day or forced)
         now = datetime.now(timezone.utc)
-        if (version_cache["checked_at"] is None or 
+        if (force or 
+            version_cache["checked_at"] is None or 
             now - version_cache["checked_at"] > timedelta(days=1)):
             
             logger.info("Checking mailcow version and updates...")
@@ -132,15 +206,20 @@ async def get_version_status():
                     if response.status_code == 200:
                         release_data = response.json()
                         latest_version = release_data.get('tag_name', 'unknown')
+                        name = release_data.get('name', '')
                         changelog = release_data.get('body', '')
                         
                         version_cache["latest_version"] = latest_version
+                        version_cache["name"] = name
                         version_cache["changelog"] = changelog
                         
-                        # Compare versions (simple string comparison)
-                        version_cache["update_available"] = current_version != latest_version
+                        # Compare versions (normalize by removing 'v' prefix)
+                        curr_norm = current_version.lower().lstrip('v')
+                        latest_norm = latest_version.lower().lstrip('v')
                         
-                        logger.info(f"Version check: Current={current_version}, Latest={latest_version}")
+                        version_cache["update_available"] = curr_norm != latest_norm
+                        
+                        logger.info(f"Version check: Current='{current_version}' (norm='{curr_norm}'), Latest='{latest_version}' (norm='{latest_norm}'), Update Available={version_cache['update_available']}")
                     else:
                         logger.warning(f"GitHub API returned status {response.status_code}")
                         version_cache["latest_version"] = "unknown"
@@ -168,12 +247,14 @@ async def get_version_status():
         return {
             "current_version": version_cache["current_version"],
             "latest_version": version_cache["latest_version"],
+            "name": version_cache.get("name", ""),
             "update_available": version_cache["update_available"],
             "changelog": version_cache["changelog"],
             "last_checked": last_checked
         }
     except Exception as e:
         logger.error(f"Error fetching version status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/status/app-version")
@@ -325,7 +406,7 @@ async def get_app_version_changelog(version: str):
 
 
 @router.get("/status/summary")
-async def get_status_summary():
+async def get_status_summary(db: Session = Depends(get_db)):
     """
     Get combined status summary for dashboard
     """
@@ -334,7 +415,7 @@ async def get_status_summary():
         
         # Fetch all status info in parallel
         containers_data, storage_data, mailcow_info = await asyncio.gather(
-            get_containers_status(),
+            _get_containers_status_internal(db),
             get_storage_status(),
             get_mailcow_info(),
             return_exceptions=True
@@ -364,3 +445,28 @@ async def get_status_summary():
     except Exception as e:
         logger.error(f"Error fetching status summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/status/container-logs")
+async def get_container_logs(lines: int = Query(100, ge=10, le=1000, description="Number of lines to fetch")):
+    """
+    Get the application container logs from the log file
+    """
+    try:
+        import os
+        log_file = "/app/data/container.log"
+        
+        if not os.path.exists(log_file):
+            return {"logs": ["Log file not found or hasn't been created yet."]}
+            
+        # Read file efficiently using deque for last N lines
+        from collections import deque
+        
+        with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+            last_lines = deque(f, maxlen=lines)
+            
+        return {"logs": list(last_lines)}
+        
+    except Exception as e:
+        logger.error(f"Error reading container logs: {e}")
+        return {"logs": [f"Error reading logs: {str(e)}"]}

@@ -4,31 +4,37 @@ This document describes all available API endpoints for the mailcow Logs Viewer 
 
 **Base URL:** `http://your-server:8080/api`
 
-**Authentication:** When `AUTH_ENABLED=true`, all API endpoints (except `/api/health`) require HTTP Basic Authentication. Include the `Authorization: Basic <base64(username:password)>` header in all requests.
+**Authentication:** The application supports two authentication methods that can be enabled independently or together:
+- **Basic Authentication**: HTTP Basic Auth with username/password
+- **OAuth2/OIDC**: OAuth2/OpenID Connect authentication with any standard identity provider
+
+When authentication is enabled, all API endpoints (except public endpoints listed below) require authentication. See [Authentication](#authentication) section for details.
 
 ---
 
 ## Table of Contents
 
 1. [Authentication](#authentication)
-2. [Health & Info](#health--info)
-3. [Job Status Tracking](#job-status-tracking)
-4. [Domains](#domains)
-5. [Mailbox Statistics](#mailbox-statistics)
-6. [Messages (Unified View)](#messages-unified-view)
-7. [Logs](#logs)
+2. [OAuth2 Authentication Endpoints](#oauth2-authentication-endpoints)
+3. [Health & Info](#health--info)
+4. [Job Status Tracking](#job-status-tracking)
+5. [Domains](#domains)
+6. [Mailbox Statistics](#mailbox-statistics)
+7. [Messages (Unified View)](#messages-unified-view)
+8. [Logs](#logs)
    - [Postfix Logs](#postfix-logs)
    - [Rspamd Logs](#rspamd-logs)
    - [Netfilter Logs](#netfilter-logs)
-8. [Queue & Quarantine](#queue--quarantine)
-9. [Statistics](#statistics)
-10. [Status](#status)
-11. [Settings](#settings)
+9. [Queue & Quarantine](#queue--quarantine)
+10. [Statistics](#statistics)
+11. [Status](#status)
+12. [Settings](#settings)
     - [SMTP & IMAP Test](#smtp--imap-test)
-12. [Export](#export)
-13. [DMARC](#dmarc)
+13. [Export](#export)
+14. [DMARC](#dmarc)
     - [DMARC IMAP Auto-Import](#dmarc-imap-auto-import)
-14. [Blacklist Monitoring](#blacklist-monitoring)
+15. [Blacklist Monitoring](#blacklist-monitoring)
+16. [Reporting](#reporting)
 
 ---
 
@@ -36,18 +42,28 @@ This document describes all available API endpoints for the mailcow Logs Viewer 
 
 ### Overview
 
-When authentication is enabled (`AUTH_ENABLED=true`), all API endpoints except `/api/health` require HTTP Basic Authentication.
+The application supports two authentication methods that can be enabled independently or simultaneously:
+
+1. **Basic Authentication**: Traditional HTTP Basic Auth with username/password
+2. **OAuth2/OIDC**: OAuth2/OpenID Connect authentication with any standard identity provider (Authentik, Mailcow, Keycloak, Google, Microsoft, etc.)
 
 **Public Endpoints (No Authentication Required):**
 - `GET /api/health` - Health check (for Docker monitoring)
+- `GET /api/info` - Application information
+- `GET /api/auth/provider-info` - Authentication provider information
 - `GET /login` - Login page (HTML)
+- `GET /api/auth/login` - OAuth2 login initiation
+- `GET /api/auth/callback` - OAuth2 callback handler
 
 **Protected Endpoints (Authentication Required):**
 - All other `/api/*` endpoints
 
-### Authentication Method
+### Authentication Methods
 
-Use HTTP Basic Authentication with the credentials configured in your environment:
+#### Basic Authentication
+
+When `BASIC_AUTH_ENABLED=true` (or legacy `AUTH_ENABLED=true`), use HTTP Basic Authentication:
+
 - Username: `AUTH_USERNAME` (default: `admin`)
 - Password: `AUTH_PASSWORD`
 
@@ -62,6 +78,27 @@ curl -H "Authorization: Basic $(echo -n 'username:password' | base64)" \
   http://your-server:8080/api/info
 ```
 
+#### OAuth2/OIDC Authentication
+
+When `OAUTH2_ENABLED=true`, users can authenticate via OAuth2/OIDC. The application supports:
+- **OIDC Discovery**: Automatic endpoint discovery via `.well-known/openid-configuration`
+- **Manual Configuration**: Explicit endpoint configuration for providers without discovery
+
+**Configuration:** See [OAuth2 Configuration Guide](../documentation/OAuth2_Configuration.md) for detailed setup instructions.
+
+**Authentication Flow:**
+1. User initiates login via `GET /api/auth/login`
+2. User is redirected to OAuth2 provider
+3. After authentication, provider redirects to `GET /api/auth/callback`
+4. Application exchanges authorization code for tokens
+5. Session is created and HTTP-only cookie is set
+6. User is redirected to main application
+
+**Session Management:**
+- Sessions are stored server-side with signed session IDs
+- HTTP-only cookies prevent XSS attacks
+- Session expiration configurable via `SESSION_EXPIRY_HOURS` (default: 24 hours)
+
 ### Login Endpoint
 
 #### GET /login
@@ -69,6 +106,12 @@ curl -H "Authorization: Basic $(echo -n 'username:password' | base64)" \
 Serves the login page (HTML). This endpoint is always publicly accessible.
 
 **Response:** HTML page with login form
+
+**Features:**
+- Dynamically displays available authentication methods
+- Shows Basic Auth form if `BASIC_AUTH_ENABLED=true`
+- Shows OAuth2 login button if `OAUTH2_ENABLED=true`
+- "OR" separator appears only when both methods are enabled
 
 **Note:** When authentication is disabled, accessing this endpoint will automatically redirect to the main application.
 
@@ -104,11 +147,13 @@ Health check endpoint for monitoring and load balancers.
 
 Application information and configuration.
 
+**Authentication:** Not required (public endpoint)
+
 **Response:**
 ```json
 {
   "name": "mailcow Logs Viewer",
-  "version": "1.5.0",
+  "version": "2.2.5",
   "mailcow_url": "https://mail.example.com",
   "local_domains": ["example.com", "mail.example.com"],
   "fetch_interval": 60,
@@ -117,9 +162,152 @@ Application information and configuration.
   "app_title": "mailcow Logs Viewer",
   "app_logo_url": "",
   "blacklist_count": 3,
-  "auth_enabled": false
+  "auth_enabled": true,
+  "basic_auth_enabled": true,
+  "oauth2_enabled": false
 }
 ```
+
+**Response Fields:**
+- `auth_enabled`: Boolean - Whether any authentication is enabled
+- `basic_auth_enabled`: Boolean - Whether Basic Authentication is enabled
+- `oauth2_enabled`: Boolean - Whether OAuth2/OIDC authentication is enabled
+
+---
+
+## OAuth2 Authentication Endpoints
+
+### GET /api/auth/provider-info
+
+Get authentication provider information for frontend.
+
+**Authentication:** Not required (public endpoint)
+
+**Response:**
+```json
+{
+  "oauth2_enabled": true,
+  "basic_auth_enabled": true,
+  "provider_name": "Authentik"
+}
+```
+
+**Response Fields:**
+- `oauth2_enabled`: Boolean - Whether OAuth2 is enabled
+- `basic_auth_enabled`: Boolean - Whether Basic Auth is enabled
+- `provider_name`: String - OAuth2 provider name (null if OAuth2 disabled)
+
+---
+
+### GET /api/auth/login
+
+Initiate OAuth2 login flow. Redirects user to OAuth2 provider.
+
+**Authentication:** Not required (public endpoint)
+
+**Response:** HTTP 302 Redirect to OAuth2 provider authorization URL
+
+**Error Responses:**
+- `400 Bad Request`: OAuth2 is not enabled
+- `500 Internal Server Error`: OAuth2 configuration error
+
+**Notes:**
+- Generates CSRF state token for security
+- Only works when `OAUTH2_ENABLED=true`
+- User will be redirected back to `/api/auth/callback` after authentication
+
+---
+
+### GET /api/auth/callback
+
+Handle OAuth2 callback from provider. This endpoint processes the authorization code and creates a session.
+
+**Authentication:** Not required (public endpoint)
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `code` | string | Authorization code from provider |
+| `state` | string | CSRF state token (must match login request) |
+| `error` | string | Error code from provider (if authentication failed) |
+
+**Response:** HTTP 302 Redirect to `/` (main application) with session cookie set
+
+**Error Handling:**
+- Invalid or missing state token → Redirects to `/login?error=invalid_state`
+- Missing authorization code → Redirects to `/login?error=missing_code`
+- Provider error → Redirects to `/login?error=oauth2_error`
+- Server error → Redirects to `/login?error=server_error`
+
+**Notes:**
+- Creates server-side session with user information
+- Sets HTTP-only session cookie
+- Session expiration controlled by `SESSION_EXPIRY_HOURS`
+
+---
+
+### GET /api/auth/logout
+
+Logout and clear session.
+
+**Authentication:** Not required (but session cookie must be present)
+
+**Response:** HTTP 302 Redirect to `/login` with session cookie cleared
+
+**Notes:**
+- Deletes server-side session
+- Clears session cookie
+- Works for both OAuth2 and Basic Auth sessions
+
+---
+
+### GET /api/auth/status
+
+Check current authentication status and get user information.
+
+**Authentication:** Not required (returns status based on current session/credentials)
+
+**Response (OAuth2 Session):**
+```json
+{
+  "authenticated": true,
+  "auth_type": "oauth2",
+  "user": {
+    "email": "user@example.com",
+    "name": "John Doe",
+    "sub": "user-id-123"
+  }
+}
+```
+
+**Response (Basic Auth):**
+```json
+{
+  "authenticated": true,
+  "auth_type": "basic",
+  "user": null
+}
+```
+
+**Response (Not Authenticated):**
+```json
+{
+  "authenticated": false,
+  "auth_type": null,
+  "user": null
+}
+```
+
+**Response Fields:**
+- `authenticated`: Boolean - Whether user is authenticated
+- `auth_type`: String - Authentication method: `"oauth2"`, `"basic"`, or `null`
+- `user`: Object - User information (OAuth2 only, null for Basic Auth)
+
+**Notes:**
+- Checks for OAuth2 session cookie first
+- Falls back to Basic Auth header if OAuth2 not found
+- User object structure depends on OAuth2 provider (varies by provider)
 
 ---
 
@@ -1679,8 +1867,11 @@ Get system configuration and status information.
     "max_search_results": 1000,
     "csv_export_limit": 10000,
     "scheduler_workers": 4,
-    "auth_enabled": false,
-    "auth_username": null,
+    "auth_enabled": true,
+    "basic_auth_enabled": true,
+    "oauth2_enabled": false,
+    "auth_username": "admin",
+    "oauth2_provider_name": null,
     "maxmind_status": {
       "configured": true,
       "valid": true,
@@ -1847,6 +2038,47 @@ Detailed health check with timing information.
   }
 }
 ```
+
+---
+
+### POST /api/settings/jobs/{job_name}/run
+
+Manually trigger a background job.
+
+**Path Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `job_name` | string | Name of the job to run |
+
+**Supported Job Names:**
+- `fetch_logs`: Import logs from mailcow
+- `complete_correlations`: Link logs to messages
+- `update_final_status`: Update delivery status
+- `expire_correlations`: Expire old correlations
+- `cleanup_logs`: Clean up old logs
+- `check_app_version`: Check for updates
+- `dns_check`: Validate DNS records
+- `sync_local_domains`: Sync domains
+- `update_geoip`: Update MaxMind databases
+- `mailbox_stats`: Update mailbox statistics
+- `alias_stats`: Update alias statistics
+- `blacklist_check`: Check blacklists
+- `sync_transports`: Sync transports
+- `send_weekly_summary`: Send weekly summary email
+
+**Response:**
+```json
+{
+  "status": "started",
+  "job": "fetch_logs",
+  "message": "Job fetch_logs started in background"
+}
+```
+
+**Error Responses:**
+- `404`: Unknown job name
+- `409`: Job is already running
 
 ---
 
@@ -2882,6 +3114,22 @@ Get a high-level summary of blacklist status for the main server IP.
 
 ---
 
+### GET /api/blacklist/config
+
+Get blacklist configuration (enabled status, alert email, etc).
+
+**Response:**
+```json
+{
+  "enabled": true,
+  "alert_email": "admin@example.com",
+  "checks_enabled": true,
+  "auto_check_hour": 5
+}
+```
+
+---
+
 ### GET /api/blacklist/monitored
 
 Get status of all monitored hosts (system IP and transport configurations).
@@ -2966,6 +3214,78 @@ Get real-time progress of the current blacklist check batch job.
 
 ---
 
+## Reporting
+
+### GET /api/system/summary
+
+Get the weekly system summary report data (JSON).
+
+**Response:**
+```json
+{
+  "date": "25/01/2026",
+  "system": {
+    "hostname": "mail.example.com",
+    "ip": "1.2.3.4",
+    "version": "2.2.0",
+    "uptime_days": 15
+  },
+  "counts": {
+    "domains": 5,
+    "mailboxes": 25,
+    "aliases": 50,
+    "total_storage": "100G",
+    "queue_size": 12,
+    "quarantine_count": 5
+  },
+  "traffic": {
+    "sent": 1234,
+    "received": 5678,
+    "failed": 45,
+    "failure_rate": 3.6,
+    "bounced": 10,
+    "rejected": 5
+  },
+  "security": {
+    "dns_issues": [
+      {
+        "domain": "example.com",
+        "issue": "SPF Record Missing"
+      }
+    ],
+    "blacklist_status": {
+      "listed": true,
+      "blacklists": ["Spamhaus ZEN"]
+    }
+  },
+  "top_failures": [
+    {
+      "username": "user@example.com",
+      "failed": 15,
+      "rate": 10.5
+    }
+  ]
+}
+```
+
+---
+
+### POST /api/system/summary/email
+
+Trigger the weekly summary email manually.
+
+**Authentication:** Required
+
+**Response:**
+```json
+{
+  "status": "queued",
+  "message": "Weekly summary email generation started"
+}
+```
+
+---
+
 ## Error Responses
 
 All endpoints may return the following error responses:
@@ -2998,5 +3318,37 @@ All endpoints may return the following error responses:
 {
   "error": "Internal server error",
   "detail": "Error description (only in debug mode)"
+}
+```
+
+---
+
+## System Status
+
+### GET /api/status/container-logs
+
+Get the application's internal container logs (stdout/stderr).
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `lines` | int | 100 | Number of lines to fetch (min: 10, max: 1000) |
+
+**Authentication:** Required
+
+**Example Request:**
+```
+GET /api/status/container-logs?lines=50
+```
+
+**Response:**
+```json
+{
+  "logs": [
+    "2026-01-29 12:00:01 - INFO - Checking for updates...",
+    "2026-01-29 12:00:02 - INFO - Database connection successful",
+    "2026-01-29 12:00:05 - INFO - [Scheduler] Job 'blacklist_check' executed successfully"
+  ]
 }
 ```

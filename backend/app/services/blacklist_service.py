@@ -53,7 +53,6 @@ BLACKLISTS = [
 
     {"name": "s5h.net", "zone": "all.s5h.net", "info_url": "http://www.s5h.net/"},
     {"name": "Blocklist.de", "zone": "bl.blocklist.de", "info_url": "https://www.blocklist.de/en/search.html"},
-    {"name": "Spamhaus DBL", "zone": "dbl.spamhaus.org", "info_url": "https://www.spamhaus.org/lookup/"},
     {"name": "SURBL", "zone": "multi.surbl.org", "info_url": "https://www.surbl.org/"},
     {"name": "0spam", "zone": "bl.0spam.org", "info_url": "https://www.0spam.org/"},
 
@@ -310,22 +309,51 @@ async def check_ip_in_blacklist(ip: str, blacklist: Dict[str, str], index: int) 
     reversed_ip = reverse_ip(ip)
     query = f"{reversed_ip}.{blacklist['zone']}"
     
-    try:
-        resolver = dns.asyncresolver.Resolver()
-        # Use external DNS servers to avoid Docker's internal DNS issues
-        resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1']
-        resolver.timeout = 10
-        resolver.lifetime = 10
-        
-        answers = await resolver.resolve(query, 'A')
-        
-        # If we get a response, check if it's a real listing or a blocked-query response
-        response_ips = [str(rdata) for rdata in answers]
-        response = response_ips[0] if response_ips else None
-        
-        # Spamhaus returns 127.255.255.x codes to indicate blocked queries
-        if response and response.startswith('127.255.'):
-            logger.debug(f"{blacklist['name']}: Blocked query response {response} - treating as clean")
+    # DNS servers to try in order (fallback if one is blocked)
+    # Quad9 works reliably, Spamhaus DNS servers are authoritative, Cloudflare as last resort
+    dns_servers_list = [
+        ['9.9.9.9', '149.112.112.112'],  # Quad9 (primary - works reliably)
+        ['193.2.1.39', '35.154.147.207'],  # Spamhaus DNS servers (authoritative)
+        ['1.1.1.1', '1.0.0.1'],  # Cloudflare (fallback)
+        ['8.8.8.8', '8.8.4.4'],  # Google DNS (last resort - often blocked by Spamhaus)
+    ]
+    
+    last_error = None
+    last_blocked_response = None
+    
+    # Try each DNS server list until we get a valid response
+    for dns_servers in dns_servers_list:
+        try:
+            resolver = dns.asyncresolver.Resolver()
+            resolver.nameservers = dns_servers
+            resolver.timeout = 10
+            resolver.lifetime = 10
+            
+            answers = await resolver.resolve(query, 'A')
+            
+            # If we get a response, check if it's a real listing or a blocked-query response
+            response_ips = [str(rdata) for rdata in answers]
+            response = response_ips[0] if response_ips else None
+            
+            # Spamhaus returns 127.255.255.x codes to indicate blocked queries
+            # If we get this, try next DNS server
+            if response and response.startswith('127.255.'):
+                last_blocked_response = response
+                logger.debug(f"{blacklist['name']}: Blocked query response {response} from {dns_servers[0]} - trying next DNS server")
+                continue  # Try next DNS server
+            
+            # Valid listing response (127.0.0.x for most blacklists)
+            return {
+                "name": blacklist["name"],
+                "zone": blacklist["zone"],
+                "info_url": blacklist.get("info_url", ""),
+                "status": "listed",
+                "listed": True,
+                "response": response
+            }
+            
+        except dns.resolver.NXDOMAIN:
+            # NXDOMAIN means IP is not listed - this is a valid response
             return {
                 "name": blacklist["name"],
                 "zone": blacklist["zone"],
@@ -334,64 +362,49 @@ async def check_ip_in_blacklist(ip: str, blacklist: Dict[str, str], index: int) 
                 "listed": False,
                 "response": None
             }
-        
-        # Valid listing response (127.0.0.x for most blacklists)
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "listed",
-            "listed": True,
-            "response": response
-        }
-        
-    except dns.resolver.NXDOMAIN:
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "clean",
-            "listed": False,
-            "response": None
-        }
-    except dns.resolver.NoAnswer:
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "clean",
-            "listed": False,
-            "response": None
-        }
-    except dns.resolver.NoNameservers as e:
-        logger.debug(f"{blacklist['name']}: NoNameservers - {str(e)}")
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "error",
-            "listed": False,
-            "response": "DNS Error"
-        }
-    except dns.exception.Timeout:
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "timeout",
-            "listed": False,
-            "response": None
-        }
-    except Exception as e:
-        logger.warning(f"Error checking {blacklist['name']}: {type(e).__name__} - {str(e)}")
-        return {
-            "name": blacklist["name"],
-            "zone": blacklist["zone"],
-            "info_url": blacklist.get("info_url", ""),
-            "status": "error",
-            "listed": False,
-            "response": str(e)
-        }
+        except dns.resolver.NoAnswer:
+            # NoAnswer also means not listed
+            return {
+                "name": blacklist["name"],
+                "zone": blacklist["zone"],
+                "info_url": blacklist.get("info_url", ""),
+                "status": "clean",
+                "listed": False,
+                "response": None
+            }
+        except (dns.resolver.NoNameservers, dns.exception.Timeout) as e:
+            # DNS server error or timeout - try next server
+            last_error = str(e)
+            logger.debug(f"{blacklist['name']}: DNS error from {dns_servers[0]}: {e} - trying next DNS server")
+            continue
+        except Exception as e:
+            # Other errors - try next server
+            last_error = str(e)
+            logger.debug(f"{blacklist['name']}: Error from {dns_servers[0]}: {e} - trying next DNS server")
+            continue
+    
+    # If we get here, all DNS servers either returned 127.255.255.x or errored
+    # This means we cannot determine the status
+    error_msg = "Query blocked/limited"
+    if last_blocked_response:
+        if last_blocked_response == "127.255.255.254":
+            error_msg = "Query rate limited - cannot determine status"
+        elif last_blocked_response == "127.255.255.255":
+            error_msg = "Query blocked - cannot determine status"
+        else:
+            error_msg = f"Query blocked ({last_blocked_response}) - cannot determine status"
+    elif last_error:
+        error_msg = f"All DNS servers failed - {last_error}"
+    
+    logger.warning(f"{blacklist['name']}: {error_msg} - all DNS servers returned blocked/error responses")
+    return {
+        "name": blacklist["name"],
+        "zone": blacklist["zone"],
+        "info_url": blacklist.get("info_url", ""),
+        "status": "error",
+        "listed": False,
+        "response": error_msg
+    }
 
 
 async def check_all_blacklists(ip: str) -> Dict[str, Any]:

@@ -522,3 +522,26 @@ class MonitoredHost(Base):
     
     def __repr__(self):
         return f"<MonitoredHost(hostname={self.hostname}, source={self.source})>"
+
+
+class KnownContainer(Base):
+    """
+    Known mailcow containers cache
+    Tracks all containers that have been seen, even when they're stopped
+    Used to properly count stopped containers that don't appear in API response
+    """
+    __tablename__ = "known_containers"
+    
+    container_name = Column(String(255), primary_key=True, index=True, nullable=False)
+    display_name = Column(String(255), nullable=False)
+    last_seen = Column(DateTime, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    __table_args__ = (
+        Index('idx_known_containers_last_seen', 'last_seen'),
+    )
+    
+    def __repr__(self):
+        return f"<KnownContainer(container_name={self.container_name}, display_name={self.display_name}, last_seen={self.last_seen})>"

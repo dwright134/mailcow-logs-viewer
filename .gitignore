@@ -63,6 +63,7 @@ htmlcov/
 .tox/
 docker-compose-dev.yml
 Dev/
+scripts/
 
 # Documentation
 docs/_build/

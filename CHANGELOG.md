@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.5] - 2026-02-15
+
+### Added
+
+#### OAuth2/OIDC Authentication Support
+- **Generic OAuth2/OIDC Integration**: Complete OAuth2/OIDC authentication support for any standard identity provider
+  - Works with Authentik, Mailcow, Keycloak, Google, Microsoft Azure AD, Auth0, and any OAuth2/OIDC provider
+  - Supports both OIDC Discovery (automatic endpoint discovery) and manual endpoint configuration
+  - Provider-agnostic implementation - no provider-specific code required
+  - Dual authentication methods: Both Basic Auth and OAuth2 can be enabled simultaneously
+  - Secure session management with HTTP-only cookies
+  - **See [OAuth2 Configuration Guide](./documentation/OAuth2_Configuration.md) for detailed setup instructions**
+
+#### mailcow Update Indicator
+- **Footer Update Badge**: Added a distinct "Update Available" badge in the footer for Mailcow server updates.
+  - Complements the existing header icon.
+  - Clickable to view the full changelog in a modal.
+
+#### Live Container Logs
+- **Terminal Viewer**: Added a terminal icon `(>_)` in the footer to view application logs directly from the UI.
+- **Live Updates**: Logs modal automatically refreshes every 2 seconds for real-time monitoring.
+- **Auto-Scroll**: Smart scrolling logic keeps view at the bottom during updates unless user scrolls up.
+
+### Changed
+
+#### Authentication Configuration
+- **Simplified Authentication Flags**: Removed `AUTH_METHOD` configuration option
+  - Authentication method now determined automatically by enabled flags
+  - `BASIC_AUTH_ENABLED=true` enables Basic Auth
+  - `OAUTH2_ENABLED=true` enables OAuth2
+  - Both can be enabled simultaneously for dual authentication
+  - `AUTH_ENABLED` still supported for backward compatibility (deprecated)
+
+- **Login Page Enhancement**: Dynamic authentication method display
+  - OAuth2 login button appears when OAuth2 is enabled
+  - Basic Auth form appears when Basic Auth is enabled
+  - "OR" separator only shown when both methods are available
+  - Provider name dynamically displayed on OAuth2 button
+
+#### GDPR Compliance
+- **Local Resource Loading**: All external JavaScript and CSS resources now loaded from local server
+  - Removed all CDN dependencies (Tailwind CSS, Marked.js, Chart.js, GitHub Markdown CSS)
+  - All libraries now served from `/static/assets/libs/` directory
+  - Application is now GDPR compliant with no external resource requests
+  - No data transfer to third-party CDN services (jsdelivr, cdnjs, etc.)
+
+### Fixed
+
+#### Container Status Counting
+- **Stopped Containers Not Counted**: Fixed issue where stopped containers were not being counted in the "Stopped" total on the Status page
+  - mailcow API only returns active containers, so stopped containers don't appear in the response
+  - Implemented database cache system (`known_containers` table) to track all containers that have been seen
+  - Containers are automatically added to cache when first seen in API response
+  - Stopped containers (known but not in API response) are now correctly identified and counted as "Stopped"
+  - Ensures accurate container counts even when containers are completely stopped
+
+#### IP Blacklist Monitor
+- **Spamhaus DNS Query Blocking**: Fixed issue where Spamhaus was blocking DNS queries, causing incorrect "Clean" status when IPs were actually listed on blacklists
+
+#### Domain DNS Checks
+- **DNS Reliability**: Added DNS fallback system for all domain DNS validation checks (SPF, DKIM, DMARC) to prevent false negatives due to DNS server failures
+
+### Technical
+
+#### New API Endpoints
+```
+GET  /api/auth/login          - Initiate OAuth2 login flow
+GET  /api/auth/callback       - Handle OAuth2 callback from provider
+GET  /api/auth/logout         - Logout and clear session
+GET  /api/auth/status         - Check authentication status
+GET  /api/auth/provider-info  - Get provider configuration for frontend
+```
+
+#### New Environment Variables
+- OAuth2/OIDC configuration variables (see `env.example` and [OAuth2 Configuration Guide](./documentation/OAuth2_Configuration.md))
+- `BASIC_AUTH_ENABLED` - New flag for Basic Auth (replaces deprecated `AUTH_ENABLED`)
+
+---
+
 ## [2.2.0] - 2026-01-28
 
 ### Added
@@ -110,11 +189,11 @@ GET /api/blacklist/check?force=true - Force new check ignoring cache
 GET /api/blacklist/config       - Get blacklist configuration
 GET /api/blacklist/summary      - Get compact summary for dashboard
 POST /api/settings/jobs/{job_name}/run
-```
 
 #### New Environment Variables
 - `DMARC_ALLOW_REPORT_DELETE`: Enable/disable report deletion from UI (default: false)
 - `BLACKLIST_ALERT_EMAIL`: Email address for blacklist alerts (optional, uses `ADMIN_EMAIL` if not set)
+- `ENABLE_WEEKLY_SUMMARY`: Enable/disable weekly server summary report (default: true)
 
 ---
 

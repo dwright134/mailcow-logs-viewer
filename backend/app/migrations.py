@@ -889,6 +889,9 @@ def run_migrations():
         # System settings (for cache signaling)
         ensure_system_settings_table(db)
         
+        # Known containers cache
+        ensure_known_containers_table(db)
+        
         add_geoip_fields_to_dmarc(db)
         add_geoip_fields_to_rspamd(db)
         
@@ -978,5 +981,43 @@ def ensure_system_settings_table(db: Session):
             
     except Exception as e:
         logger.error(f"Error ensuring system_settings table: {e}")
+        db.rollback()
+        raise
+
+
+def ensure_known_containers_table(db: Session):
+    """Ensure known_containers table exists"""
+    try:
+        # Check if table exists
+        result = db.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'known_containers'
+            )
+        """))
+        table_exists = result.scalar()
+        
+        if not table_exists:
+            logger.info("Creating known_containers table...")
+            db.execute(text("""
+                CREATE TABLE known_containers (
+                    container_name VARCHAR(255) PRIMARY KEY,
+                    display_name VARCHAR(255) NOT NULL,
+                    last_seen TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            
+            # Create indexes
+            db.execute(text("CREATE INDEX IF NOT EXISTS idx_known_containers_last_seen ON known_containers(last_seen)"))
+            
+            db.commit()
+            logger.info("known_containers table created successfully")
+        else:
+            logger.debug("known_containers table already exists")
+            
+    except Exception as e:
+        logger.error(f"Error ensuring known_containers table: {e}")
         db.rollback()
         raise

@@ -224,15 +224,25 @@ function getAuthHeader() {
 }
 
 // Enhanced fetch with authentication
+// Supports both OAuth2 (session cookies) and Basic Auth
 async function authenticatedFetch(url, options = {}) {
+    // For OAuth2, cookies are automatically sent by browser
+    // For Basic Auth, we need to add the header
     const headers = {
         ...options.headers,
-        ...getAuthHeader()
     };
+    
+    // Only add Basic Auth header if we have credentials (not for OAuth2 sessions)
+    // OAuth2 sessions use cookies which are sent automatically
+    const authHeader = getAuthHeader();
+    if (Object.keys(authHeader).length > 0) {
+        Object.assign(headers, authHeader);
+    }
 
     const response = await fetch(url, {
         ...options,
-        headers
+        headers,
+        credentials: 'include' // Include cookies for OAuth2 sessions
     });
 
     // Handle 401 Unauthorized
@@ -302,17 +312,34 @@ async function handleLogin(event) {
 }
 
 // Handle logout
-function handleLogout() {
+async function handleLogout() {
+    // Check if OAuth2 is being used
+    try {
+        const statusResponse = await fetch('/api/auth/status', { credentials: 'include' });
+        if (statusResponse.ok) {
+            const statusData = await statusResponse.json();
+            if (statusData.auth_type === 'oauth2') {
+                // OAuth2 logout - call logout endpoint
+                window.location.href = '/api/auth/logout';
+                return;
+            }
+        }
+    } catch (e) {
+        // Fall through to Basic Auth logout
+    }
+    
+    // Basic Auth logout
     clearAuthCredentials();
     // Redirect to login page
     window.location.href = '/login';
 }
 
 // Check authentication on page load
+// Supports both OAuth2 (session cookies) and Basic Auth
 async function checkAuthentication() {
     // First check if authentication is enabled
     try {
-        const infoResponse = await fetch('/api/info');
+        const infoResponse = await fetch('/api/info', { credentials: 'include' });
         if (infoResponse.ok) {
             const infoData = await infoResponse.json();
             // If authentication is disabled, allow access
@@ -325,6 +352,23 @@ async function checkAuthentication() {
         console.warn('Could not check auth status, assuming enabled');
     }
 
+    // Check OAuth2 session first (if enabled)
+    try {
+        const statusResponse = await fetch('/api/auth/status', { credentials: 'include' });
+        if (statusResponse.ok) {
+            const statusData = await statusResponse.json();
+            if (statusData.authenticated && statusData.auth_type === 'oauth2') {
+                // OAuth2 session is valid
+                const logoutBtn = document.getElementById('logout-btn');
+                if (logoutBtn) logoutBtn.classList.remove('hidden');
+                return true;
+            }
+        }
+    } catch (e) {
+        // OAuth2 check failed, fall through to Basic Auth
+    }
+
+    // Fall back to Basic Auth
     // Authentication is enabled, check credentials
     loadAuthCredentials();
 
@@ -415,6 +459,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     loadAppInfo();
+    loadMailcowVersionStatus();
 
     // Initialize router and get initial route from URL
     const routeInfo = typeof initRouter === 'function' ? initRouter() : { baseRoute: 'dashboard', params: {} };
@@ -542,15 +587,109 @@ async function loadAppVersionStatus() {
 
         const data = await response.json();
         const updateBadge = document.getElementById('update-badge');
+        const footerVersion = document.getElementById('app-version-footer');
+
+        if (footerVersion) {
+            footerVersion.textContent = `v${data.current_version}`;
+        }
 
         if (updateBadge && data.update_available) {
             updateBadge.classList.remove('hidden');
             updateBadge.title = `Update available: v${data.latest_version}`;
+
+            // Allow clicking badge to view changelog
+            updateBadge.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showMarkdownModal(`Update: v${data.latest_version}`, data.changelog || 'No changelog available');
+            };
         } else if (updateBadge) {
             updateBadge.classList.add('hidden');
         }
     } catch (error) {
         console.error('Failed to load app version status:', error);
+    }
+}
+
+// Helper to show markdown content in the changelog modal
+function showMarkdownModal(title, markdownContent) {
+    let htmlContent = markdownContent;
+    try {
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                breaks: true,
+                gfm: true
+            });
+            htmlContent = marked.parse(markdownContent);
+        }
+    } catch (e) {
+        console.error('Failed to parse markdown:', e);
+    }
+
+    const modal = document.getElementById('changelog-modal');
+    const modalTitle = modal?.querySelector('h3');
+    const content = document.getElementById('changelog-content');
+
+    if (modal && content) {
+        if (modalTitle) {
+            modalTitle.textContent = title;
+        }
+
+        // Add some basic styling for markdown content
+        content.innerHTML = `<div class="markdown-body prose dark:prose-invert max-w-none">${htmlContent}</div>`;
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+async function loadMailcowVersionStatus() {
+    try {
+        const response = await authenticatedFetch('/api/status/version');
+        if (!response.ok) return;
+
+        const data = await response.json();
+        const updateIcon = document.getElementById('mailcow-update-icon');
+        const footerVersion = document.getElementById('mailcow-version-footer');
+        const footerUpdateBadge = document.getElementById('mailcow-update-badge');
+
+        // Update footer version text
+        if (footerVersion && data.current_version) {
+            footerVersion.textContent = `mailcow: v${data.current_version}`;
+        }
+
+        // Handle update indicators (both header icon and footer badge)
+        if (data.update_available) {
+            // Update global state for the shared modal function
+            window.mailcowUpdateVersion = data.latest_version;
+            window.mailcowUpdateName = data.name || '';
+            window.mailcowUpdateChangelog = data.changelog || 'No changelog available';
+
+            // Function to handle clicks using the shared logic
+            const handleClick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showMailcowUpdateModal();
+            };
+
+            // Header Icon
+            if (updateIcon) {
+                updateIcon.classList.remove('hidden');
+                updateIcon.title = `Update available: ${data.latest_version}`;
+                updateIcon.onclick = handleClick;
+            }
+
+            // Footer Badge
+            if (footerUpdateBadge) {
+                footerUpdateBadge.classList.remove('hidden');
+                footerUpdateBadge.title = `Update available: ${data.latest_version}`;
+                footerUpdateBadge.onclick = handleClick;
+            }
+        } else {
+            if (updateIcon) updateIcon.classList.add('hidden');
+            if (footerUpdateBadge) footerUpdateBadge.classList.add('hidden');
+        }
+    } catch (error) {
+        console.error('Failed to load mailcow version status:', error);
     }
 }
 
@@ -1847,8 +1986,13 @@ async function loadStatusContainers() {
         }
 
         if (containersList.length > 0) {
-            const running = containersList.filter(c => c.state === 'running').length;
-            const stopped = containersList.filter(c => c.state !== 'running').length;
+            // Normalize states and count: only 'running' is running, everything else is stopped
+            // This includes: paused, exited, stopped, created, restarting, removing, dead, unknown, etc.
+            const running = containersList.filter(c => {
+                const state = (c.state || 'unknown').toString().toLowerCase().trim();
+                return state === 'running';
+            }).length;
+            const stopped = containersList.length - running;
             const total = containersList.length;
 
             container.innerHTML = `
@@ -1901,13 +2045,46 @@ async function loadStatusSystem() {
     try {
         console.log('Loading System Info...');
 
-        const response = await authenticatedFetch('/api/status/mailcow-info');
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        // Fetch both system info and version status
+        const [infoResponse, versionResponse] = await Promise.all([
+            authenticatedFetch('/api/status/mailcow-info'),
+            authenticatedFetch('/api/status/version')
+        ]);
+
+        if (!infoResponse.ok) {
+            throw new Error(`HTTP ${infoResponse.status}: ${infoResponse.statusText}`);
         }
 
-        const data = await response.json();
+        const data = await infoResponse.json();
+        const versionData = versionResponse.ok ? await versionResponse.json() : null;
+
         console.log('System info data:', data);
+
+        let versionHtml = '';
+        if (versionData && versionData.current_version) {
+            // Store data globally to avoid passing complex strings in HTML
+            window.mailcowUpdateVersion = versionData.latest_version;
+            window.mailcowUpdateName = versionData.name || ''; // Store release title
+            window.mailcowUpdateChangelog = versionData.changelog || 'No changelog available';
+
+            const updateBadge = versionData.update_available ?
+                `<button onclick="showMailcowUpdateModal()" 
+                    class="ml-2 px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 rounded text-xs font-medium hover:bg-blue-200 dark:hover:bg-blue-900/50 cursor-pointer transition-colors">
+                    Update Available
+                </button>` : '';
+
+            versionHtml = `
+                <div class="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700 mx-1">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">mailcow Version</span>
+                        <div class="flex items-center">
+                            <span class="text-sm font-bold text-gray-900 dark:text-white">v${versionData.current_version}</span>
+                            ${updateBadge}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
 
         container.innerHTML = `
             <div class="space-y-4">
@@ -1928,6 +2105,7 @@ async function loadStatusSystem() {
                     <p class="text-2xl font-bold text-gray-900 dark:text-white">${data.aliases.total}</p>
                     <p class="text-xs text-green-600 dark:text-green-400 mt-1">${data.aliases.active} active</p>
                 </div>
+                ${versionHtml}
             </div>
         `;
     } catch (error) {
@@ -1935,6 +2113,19 @@ async function loadStatusSystem() {
         document.getElementById('status-system').innerHTML = `<p class="text-red-500 text-center py-8">Failed to load system info: ${error.message}</p>`;
     }
 }
+
+function showMailcowUpdateModal() {
+    if (window.mailcowUpdateVersion && window.mailcowUpdateChangelog) {
+        // Use release name as title if available, otherwise fallback to version
+        const title = window.mailcowUpdateName
+            ? `Update Available: ${window.mailcowUpdateName}`
+            : `mailcow Update: ${window.mailcowUpdateVersion}`;
+
+        showMarkdownModal(title, window.mailcowUpdateChangelog);
+    }
+}
+
+
 
 async function loadStatusStorage() {
     const container = document.getElementById('status-storage');
@@ -4809,23 +5000,34 @@ function renderSettings(content, data) {
                         </p>
                     </div>
                     <div class="p-3 bg-gray-50 dark:bg-gray-700/30 rounded-lg">
-                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Authentication</p>
-                        <p class="text-sm text-gray-900 dark:text-white mt-1">
-                            ${config.auth_enabled ?
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
-                                    <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
-                                    </svg>
-                                    Enabled
-                                </span>` :
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Authentication</p>
+                        ${config.auth_enabled ?
+            `<div class="space-y-2">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                                        <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
+                                        </svg>
+                                        Enabled
+                                    </span>
+                                    ${config.basic_auth_enabled ?
+                `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
+                                            Basic Auth
+                                        </span>` : ''
+            }
+                                    ${config.oauth2_enabled ?
+                `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400">
+                                            OAuth2${config.oauth2_provider_name ? ` (${escapeHtml(config.oauth2_provider_name)})` : ''}
+                                        </span>` : ''
+            }
+                                </div>
+                                ${config.basic_auth_enabled && config.auth_username ?
+                `<p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Basic Auth Username: ${escapeHtml(config.auth_username)}</p>` : ''
+            }
+                            </div>` :
             `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400">
                                     Disabled
                                 </span>`
-        }
-                        </p>
-                        ${config.auth_enabled && config.auth_username ?
-            `<p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Username: ${escapeHtml(config.auth_username)}</p>` :
-            ''
         }
                     </div>
                     <div class="p-3 bg-gray-50 dark:bg-gray-700/30 rounded-lg ${config.local_domains && config.local_domains.length > 0 ? 'col-span-1 md:col-span-2 lg:col-span-3' : ''}">
@@ -7116,29 +7318,8 @@ async function showHelpModal(docName) {
         }
 
         const markdown = await response.text();
+        showMarkdownModal(`Help - ${docName}`, markdown);
 
-        let htmlContent = markdown;
-        if (typeof marked !== 'undefined') {
-            marked.setOptions({
-                breaks: true,
-                gfm: true
-            });
-            htmlContent = marked.parse(markdown);
-        }
-
-        const modal = document.getElementById('changelog-modal');
-        const modalTitle = modal?.querySelector('h3');
-        const content = document.getElementById('changelog-content');
-
-        if (modal && content) {
-            if (modalTitle) {
-                modalTitle.textContent = `Help - ${docName}`;
-            }
-
-            content.innerHTML = htmlContent;
-            modal.classList.remove('hidden');
-            document.body.style.overflow = 'hidden';
-        }
     } catch (error) {
         console.error('Failed to load help documentation:', error);
 
@@ -7658,22 +7839,22 @@ function renderMailboxStatsAccordion(mailboxes, page = 1, totalPages = 1) {
         html += `
             <div class="flex items-center justify-center gap-2 mt-4 p-4 bg-white dark:bg-gray-800 rounded-lg shadow">
                 <button onclick="loadMailboxStatsPage(1)" ${page === 1 ? 'disabled' : ''} 
-                    class="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded ${page === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    class="px-3 py-1.5 text-sm text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded ${page === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
                     First
                 </button>
                 <button onclick="loadMailboxStatsPage(${page - 1})" ${page === 1 ? 'disabled' : ''} 
-                    class="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded ${page === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    class="px-3 py-1.5 text-sm text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded ${page === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
                     Previous
                 </button>
                 <span class="px-4 py-1.5 text-sm text-gray-700 dark:text-gray-300">
                     Page ${page} of ${totalPages}
                 </span>
                 <button onclick="loadMailboxStatsPage(${page + 1})" ${page === totalPages ? 'disabled' : ''} 
-                    class="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded ${page === totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    class="px-3 py-1.5 text-sm text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded ${page === totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
                     Next
                 </button>
                 <button onclick="loadMailboxStatsPage(${totalPages})" ${page === totalPages ? 'disabled' : ''} 
-                    class="px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded ${page === totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
+                    class="px-3 py-1.5 text-sm text-gray-900 dark:text-white border border-gray-300 dark:border-gray-600 rounded ${page === totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}">
                     Last
                 </button>
             </div>
@@ -7905,6 +8086,88 @@ function resetMailboxStatsFilters() {
 
     // Reload everything
     loadMailboxStats();
+}
+
+// =============================================================================
+// CONTAINER LOGS MODAL
+// =============================================================================
+
+let containerLogsInterval = null;
+
+async function fetchContainerLogs(silent = false) {
+    const content = document.getElementById('container-logs-content');
+
+    if (content && !silent) {
+        content.textContent = 'Loading logs...';
+    }
+
+    try {
+        const response = await authenticatedFetch('/api/status/container-logs?lines=500');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (content && data.logs) {
+            const isScrolledToBottom = content.parentElement
+                ? (content.parentElement.scrollHeight - content.parentElement.scrollTop === content.parentElement.clientHeight)
+                : true;
+
+            if (data.logs.length === 0) {
+                if (!silent) content.textContent = 'No logs available.';
+            } else {
+                content.textContent = data.logs.join('');
+            }
+
+            // Auto-scroll to bottom if it was already at bottom or if it's the first load
+            if (!silent || isScrolledToBottom) {
+                const container = content.parentElement;
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
+                }
+            }
+        }
+    } catch (error) {
+        console.error('Failed to load container logs:', error);
+        if (content && !silent) {
+            content.textContent = `Failed to load logs: ${error.message}`;
+        }
+    }
+}
+
+function loadContainerLogs() {
+    const modal = document.getElementById('container-logs-modal');
+
+    if (modal) {
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+    }
+
+    // Initial load
+    fetchContainerLogs(false);
+
+    // Clear existing interval just in case
+    if (containerLogsInterval) clearInterval(containerLogsInterval);
+
+    // Set auto-refresh every 2 seconds
+    containerLogsInterval = setInterval(() => {
+        fetchContainerLogs(true);
+    }, 2000);
+}
+
+function closeContainerLogsModal() {
+    const modal = document.getElementById('container-logs-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+        document.body.style.overflow = '';
+    }
+
+    // Stop auto-refresh
+    if (containerLogsInterval) {
+        clearInterval(containerLogsInterval);
+        containerLogsInterval = null;
+    }
 }
 
 function loadMailboxStatsPage(page) {

@@ -13,6 +13,7 @@ ALLOWED_DOCS = {
     "Domains": "Domains.md",
     "DMARC": "DMARC.md",
     "Mailbox_Stats": "Mailbox_Stats.md",
+    "IP_Blacklist_Monitor": "IP_Blacklist_Monitor.md",
 }
 
 @router.get("/docs/{doc_name}", response_class=PlainTextResponse)
