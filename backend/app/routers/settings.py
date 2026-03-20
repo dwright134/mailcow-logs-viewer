@@ -3,6 +3,7 @@ API endpoints for settings and system information
 Shows configuration, last import times, and background job status
 """
 import logging
+import os
 import httpx
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
@@ -20,6 +21,7 @@ from ..services.connection_test import test_smtp_connection, test_imap_connectio
 from ..services.geoip_downloader import is_license_configured, get_geoip_status
 from .domains import get_cached_server_ip
 from ..mailcow_api import mailcow_api
+from ..services.oauth2_client import oauth2_client
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,20 @@ _SENSITIVE_SETTING_KEYS = frozenset({
     "dmarc_imap_password", "session_secret_key", "maxmind_license_key"
 })
 MASK_PLACEHOLDER = "********"
+
+
+def _is_env_key_set(key: str) -> bool:
+    """Check if a settings key has a corresponding ENV variable actually set in os.environ.
+    Checks both the default name (field name uppercased) and any explicit env= name from Field()."""
+    # Always check the uppercased field name (pydantic-settings default)
+    env_names = {key.upper()}
+    # Also check explicit env= parameter from Field() if present (stored in json_schema_extra)
+    field_info = Settings.model_fields.get(key)
+    if field_info and isinstance(getattr(field_info, 'json_schema_extra', None), dict):
+        explicit_env = field_info.json_schema_extra.get('env')
+        if explicit_env:
+            env_names.add(explicit_env.upper() if isinstance(explicit_env, str) else explicit_env)
+    return any(name in os.environ for name in env_names)
 
 
 def _effective_config_for_editable(settings_obj: Settings) -> Dict[str, Any]:
@@ -367,21 +383,17 @@ async def get_editable_settings(db: Session = Depends(get_db)):
         reload_settings(db)
     env_differs = {}
     if settings.edit_settings_via_ui_enabled and has_config_overrides_in_db(db):
-        # Compare ENV-only values with DB values
+        # Compare ENV-only values with DB values, but only for keys where the ENV variable
+        # is actually explicitly set (not just using the default value)
         env_only = Settings()  # Loads from ENV/defaults only
         for key in EDITABLE_SETTING_KEYS:
+            if not _is_env_key_set(key):
+                continue  # ENV variable not set, no conflict possible
             if hasattr(env_only, key) and hasattr(settings, key):
                 env_val = getattr(env_only, key)
                 db_val = getattr(settings, key)
-                # Only show warning if values differ AND at least one is not empty/None
-                # If both are empty/None, no warning needed
                 if env_val != db_val:
-                    # Normalize empty values for comparison
-                    env_empty = env_val is None or env_val == "" or env_val == 0 or env_val is False
-                    db_empty = db_val is None or db_val == "" or db_val == 0 or db_val is False
-                    # Only add to differs if not both empty
-                    if not (env_empty and db_empty):
-                        env_differs[key] = {"env": env_val, "db": db_val}
+                    env_differs[key] = {"env": env_val, "db": db_val}
     return {
         "settings_edit_via_ui_enabled": settings.edit_settings_via_ui_enabled,
         "settings_migrated": has_config_overrides_in_db(db),
@@ -437,6 +449,7 @@ async def update_settings(body: Dict[str, Any], db: Session = Depends(get_db)):
     save_config_overrides_to_db(db, allowed)
     reload_settings(db)
     mailcow_api.reload_config()
+    oauth2_client.reload_config()
     reschedule_interval_jobs()
     return {"settings_edit_via_ui_enabled": True, "settings_migrated": True, "configuration": _effective_config_for_editable(settings)}
 
@@ -462,10 +475,13 @@ async def import_settings_from_env(db: Session = Depends(get_db)):
     save_config_overrides_to_db(db, overrides)
     reload_settings(db)
     mailcow_api.reload_config()
+    oauth2_client.reload_config()
     reschedule_interval_jobs()
     # After reload, settings now has DB values; compare with ENV to find differences
     env_differs = {}
     for key in EDITABLE_SETTING_KEYS:
+        if not _is_env_key_set(key):
+            continue  # ENV variable not set, no conflict possible
         if hasattr(env_only, key) and hasattr(settings, key):
             env_val = getattr(env_only, key)
             db_val = getattr(settings, key)

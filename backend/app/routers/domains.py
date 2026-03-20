@@ -1009,7 +1009,7 @@ async def save_dns_check_to_db(db: Session, domain_name: str, dns_data: Dict[str
             existing.dmarc_check = dns_data.get('dmarc')
             existing.checked_at = checked_at
             existing.updated_at = checked_at
-            existing.is_full_check = is_full_check  # ← הוסף
+            existing.is_full_check = is_full_check
         else:
             new_check = DomainDNSCheck(
                 domain_name=domain_name,
@@ -1017,7 +1017,7 @@ async def save_dns_check_to_db(db: Session, domain_name: str, dns_data: Dict[str
                 dkim_check=dns_data.get('dkim'),
                 dmarc_check=dns_data.get('dmarc'),
                 checked_at=checked_at,
-                is_full_check=is_full_check  # ← הוסף
+                is_full_check=is_full_check
             )
             db.add(new_check)
         

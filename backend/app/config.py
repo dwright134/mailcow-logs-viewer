@@ -493,7 +493,22 @@ def build_settings(db: Optional[Any] = None) -> Settings:
         allowed = {k: v for k, v in overrides.items() if k in EDITABLE_SETTING_KEYS}
         if not allowed:
             return base
-        return base.model_copy(update=allowed)
+        merged = base.model_copy(update=allowed)
+        # model_copy skips validators. Apply them manually on affected fields.
+        # (We can't use Settings.model_validate() because BaseSettings re-reads ENV on init)
+        try:
+            if 'mailcow_url' in allowed:
+                object.__setattr__(merged, 'mailcow_url', merged.mailcow_url.rstrip('/'))
+            if 'log_level' in allowed:
+                v = merged.log_level.upper()
+                if v not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
+                    v = 'WARNING'
+                object.__setattr__(merged, 'log_level', v)
+            if 'scheduler_workers' in allowed:
+                object.__setattr__(merged, 'scheduler_workers', max(1, min(64, merged.scheduler_workers)))
+        except Exception as e:
+            logger.warning("Post-validation of DB overrides failed: %s", e)
+        return merged
     except Exception as e:
         logger.warning("Could not load config overrides from DB: %s", e)
         return base
@@ -516,6 +531,9 @@ def reload_settings(db: Optional[Any] = None) -> None:
     """Reload effective settings (e.g. after saving from UI). Updates the global settings wrapper."""
     global _settings_wrapper
     _settings_wrapper._inner = build_settings(db)
+    # Re-apply log level to root logger (setup_logging ran at import time with the old level)
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, _settings_wrapper.log_level, logging.WARNING))
 
 
 def setup_logging():

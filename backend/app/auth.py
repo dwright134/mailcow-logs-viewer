@@ -22,7 +22,7 @@ def verify_credentials(username: str, password: str) -> bool:
     Verify HTTP Basic Auth credentials
     Returns True if valid, False otherwise
     """
-    if not settings.auth_enabled:
+    if not settings.is_basic_auth_enabled:
         return True
     
     if not settings.auth_password:

@@ -5384,7 +5384,7 @@ function renderSettings(content, data) {
             </div>
             <div class="p-4 space-y-4">
                 <div class="flex flex-wrap gap-2" id="settings-edit-actions">
-                    ${!data.settings_migrated ? '<button type="button" id="settings-import-env-btn" class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors">מיגרציה של ההגדרות</button>' : ''}
+                    ${!data.settings_migrated ? '<button type="button" id="settings-import-env-btn" class="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition-colors">Migrate Settings from ENV</button>' : ''}
                     ${data.settings_migrated ? '<button type="submit" form="settings-edit-form" id="settings-save-btn" class="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors">Save changes</button>' : ''}
                 </div>
                 <form id="settings-edit-form" class="space-y-4 pr-2">

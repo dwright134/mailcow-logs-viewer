@@ -2795,18 +2795,18 @@ Get source IP analysis with GeoIP enrichment.
       "last_seen": 1704758400
     },
     {
-      "source_ip": "212.199.162.78",
-      "total_messages": 456,
-      "dmarc_pass_pct": 98.2,
-      "spf_pass_pct": 99.1,
-      "dkim_pass_pct": 98.5,
-      "country_code": "IL",
-      "country_name": "Israel",
-      "country_emoji": "🇮🇱",
-      "city": "Tel Aviv",
-      "asn": "AS8551",
-      "asn_org": "Bezeq International Ltd.",
-      "first_seen": 1704240000,
+      "source_ip": "8.8.4.4",
+      "total_messages": 1250,
+      "dmarc_pass_pct": 100.0,
+      "spf_pass_pct": 100.0,
+      "dkim_pass_pct": 100.0,
+      "country_code": "US",
+      "country_name": "United States",
+      "country_emoji": "🇺🇸",
+      "city": "Mountain View",
+      "asn": "AS15169",
+      "asn_org": "Google LLC",
+      "first_seen": 1704153600,
       "last_seen": 1704758400
     }
   ]

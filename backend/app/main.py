@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from .config import settings, set_cached_active_domains
+from .config import settings, set_cached_active_domains, reload_settings
 from .database import init_db, check_db_connection
 from .scheduler import start_scheduler, stop_scheduler
 from .mailcow_api import mailcow_api
@@ -56,6 +56,36 @@ async def lifespan(app: FastAPI):
     """Application lifecycle management"""
     # Startup
     logger.info("Starting mailcow Logs Viewer")
+    
+    # Initialize database
+    try:
+        init_db()
+        if not check_db_connection():
+            logger.error("Database connection failed!")
+            raise Exception("Cannot connect to database")
+        
+        # Run migrations and cleanup
+        logger.info("Running database migrations and cleanup...")
+        run_migrations()
+
+        # Load settings overrides from DB (if UI editing is enabled and overrides exist)
+        if settings.edit_settings_via_ui_enabled:
+            try:
+                from .database import get_db_context
+                with get_db_context() as db:
+                    reload_settings(db)
+                    # Reload services that cache settings values
+                    mailcow_api.reload_config()
+                    from .services.oauth2_client import oauth2_client
+                    oauth2_client.reload_config()
+                    logger.info("Settings loaded from database overrides")
+            except Exception as e:
+                logger.warning(f"Could not load settings from DB: {e}")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
+    
+    # Log effective configuration (after DB overrides are loaded)
     logger.info(f"Configuration: {settings.fetch_interval}s interval, {settings.retention_days}d retention")
     
     if settings.blacklist_emails_list:
@@ -75,20 +105,6 @@ async def lifespan(app: FastAPI):
         logger.info(f"Authentication is ENABLED: {', '.join(auth_methods)}")
     else:
         logger.info("Authentication is DISABLED")
-    
-    # Initialize database
-    try:
-        init_db()
-        if not check_db_connection():
-            logger.error("Database connection failed!")
-            raise Exception("Cannot connect to database")
-        
-        # Run migrations and cleanup
-        logger.info("Running database migrations and cleanup...")
-        run_migrations()
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise
     
     # Initialize GeoIP database (if configured)
     try:
@@ -241,7 +257,7 @@ async def health_check():
             "retention_days": settings.retention_days,
             "mailcow_url": settings.mailcow_url,
             "blacklist_enabled": len(settings.blacklist_emails_list) > 0,
-            "auth_enabled": settings.auth_enabled
+            "auth_enabled": settings.is_authentication_enabled
         }
     }
 

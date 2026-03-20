@@ -22,6 +22,10 @@ class OAuth2Client:
     """Generic OAuth2/OIDC client"""
     
     def __init__(self):
+        self._update_config()
+        
+    def _update_config(self):
+        """Update configuration from settings (supports dynamic reload)"""
         self.issuer_url = settings.oauth2_issuer_url
         self.client_id = settings.oauth2_client_id
         self.client_secret = settings.oauth2_client_secret
@@ -35,6 +39,11 @@ class OAuth2Client:
         
         # OIDC discovery cache
         self._discovery_cache: Optional[Dict[str, Any]] = None
+
+    def reload_config(self):
+        """Reload configuration from settings (call after settings are updated via UI)"""
+        self._update_config()
+        logger.info("OAuth2 client configuration reloaded")
         
     async def discover_endpoints(self) -> Dict[str, Any]:
         """

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-03-20
+
+### Fixed
+
+#### Critical Security Fix: Basic Auth Credential Bypass
+- **Authentication bypass when using `BASIC_AUTH_ENABLED`**: Fixed a critical vulnerability where `BASIC_AUTH_ENABLED=true` accepted **any username and password**
+  - Root cause: `verify_credentials()` checked the deprecated `auth_enabled` field (always `false`) instead of `is_basic_auth_enabled`
+  - When only `BASIC_AUTH_ENABLED=true` was set (without the deprecated `AUTH_ENABLED`), credential verification was completely skipped
+  - Both `BASIC_AUTH_ENABLED` and legacy `AUTH_ENABLED` now work correctly
+  - **All users using `BASIC_AUTH_ENABLED=true` should update immediately**
+
+#### Settings Persistence After Restart
+- **Settings saved via UI were lost on restart**: Database-stored settings were not loaded during application startup
+  - Startup log messages now show effective configuration values (after DB overrides are applied)
+
+#### ENV Conflict Warning False Positives
+- **"This value differs from ENV" warning shown incorrectly**: Warning appeared for settings that differed from defaults, even when no ENV variable was explicitly set
+  - Warning now only appears when an ENV variable is explicitly set AND differs from the DB value
+
+#### OAuth2 / Service Config Not Working from UI
+- **OAuth2, SMTP, and other services ignored UI settings**: Singleton service instances (`OAuth2Client`, `MailcowAPI`) captured settings by value at import time instead of reading dynamically
+  - Service configs are now reloaded after settings save, import-from-env, and on startup
+
+#### Health Endpoint Auth Status
+- Fixed `/api/health` reporting incorrect authentication status by using the deprecated `auth_enabled` field instead of the actual `is_authentication_enabled` property
+
+---
+
 ## [2.3.0] - 2026-03-19
 
 ### Added

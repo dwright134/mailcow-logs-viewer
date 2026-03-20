@@ -356,6 +356,12 @@ class MailcowAPI:
         logger.info("Fetching alias domains")
         try:
             data = await self._make_request("/api/v1/get/alias-domain/all")
+            if isinstance(data, dict):
+                if not data:
+                    logger.info("No alias domains found (empty dict)")
+                    return []
+                logger.warning(f"Unexpected alias-domain dict response: {data}")
+                return []
             if not isinstance(data, list):
                 logger.warning(f"Unexpected alias-domain response format: {type(data)}")
                 return []
