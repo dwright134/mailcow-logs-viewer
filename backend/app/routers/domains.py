@@ -59,7 +59,8 @@ def get_cached_server_ip() -> str:
 
 async def resolve_dns_with_fallback(query: str, record_type: str = 'TXT', timeout: int = 5):
     """
-    Resolve DNS query with fallback to multiple DNS servers
+    Resolve DNS query with fallback to multiple DNS servers.
+    Uses UDP first, with automatic DoH fallback when UDP port 53 is blocked.
     
     Args:
         query: DNS query (domain name)
@@ -74,45 +75,8 @@ async def resolve_dns_with_fallback(query: str, record_type: str = 'TXT', timeou
         dns.resolver.NoAnswer: If no answer (after trying all servers)
         Exception: If all DNS servers fail
     """
-    # DNS servers to try in order
-    dns_servers_list = [
-        ['8.8.8.8', '8.8.4.4'],  # Google DNS (primary)
-        ['1.1.1.1', '1.0.0.1'],  # Cloudflare DNS (fallback)
-    ]
-    
-    last_error = None
-    
-    # Try each DNS server list until we get a valid response
-    for dns_servers in dns_servers_list:
-        try:
-            resolver = dns.asyncresolver.Resolver()
-            resolver.nameservers = dns_servers
-            resolver.timeout = timeout
-            resolver.lifetime = timeout
-            
-            answers = await resolver.resolve(query, record_type)
-            return answers
-            
-        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer) as e:
-            # NXDOMAIN and NoAnswer are valid responses - return them
-            raise
-        except (dns.resolver.NoNameservers, dns.exception.Timeout) as e:
-            # DNS server error or timeout - try next server
-            last_error = str(e)
-            logger.debug(f"DNS error from {dns_servers[0]} for {query}: {e} - trying next DNS server")
-            continue
-        except Exception as e:
-            # Other errors - try next server
-            last_error = str(e)
-            logger.debug(f"Error from {dns_servers[0]} for {query}: {e} - trying next DNS server")
-            continue
-    
-    # If we get here, all DNS servers failed
-    error_msg = f"All DNS servers failed for {query}"
-    if last_error:
-        error_msg += f" - {last_error}"
-    logger.warning(error_msg)
-    raise Exception(error_msg)
+    from app.services.dns_resolver import resolve
+    return await resolve(query, record_type, timeout)
 
 
 async def check_spf_record(domain: str) -> Dict[str, Any]:

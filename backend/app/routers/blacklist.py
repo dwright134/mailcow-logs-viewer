@@ -103,16 +103,14 @@ async def check_blacklists(
         
     # If host specified, check single host
     import re
-    import dns.asyncresolver
     if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", target_ip):
          try:
-            resolver = dns.asyncresolver.Resolver()
-            resolver.nameservers = ['8.8.8.8', '1.1.1.1']
-            answers = await resolver.resolve(target_ip, 'A')
+            from app.services.dns_resolver import resolve
+            answers = await resolve(target_ip, 'A', timeout=5)
             if answers:
                 target_ip = str(answers[0])
          except Exception:
-             pass # use hostname as is if resolution fails
+              pass # use hostname as is if resolution fails
              
     try:
         results = await get_blacklist_check_results(force=force, ip=target_ip)

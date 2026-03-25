@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 from ..database import get_db
 from ..models import PostfixLog, RspamdLog, NetfilterLog, MessageCorrelation
 from ..config import settings, EDITABLE_SETTING_KEYS, reload_settings, Settings
-from ..config import _get_field_annotations
+from ..config import _get_field_annotations, get_env_locked_keys
 from ..scheduler import last_fetch_run_time, get_job_status, update_job_status, reschedule_interval_jobs
 from ..services.settings_store import get_config_overrides_from_db, save_config_overrides_to_db, has_config_overrides_in_db
 from ..services.connection_test import test_smtp_connection, test_imap_connection
@@ -35,18 +35,6 @@ _SENSITIVE_SETTING_KEYS = frozenset({
 MASK_PLACEHOLDER = "********"
 
 
-def _is_env_key_set(key: str) -> bool:
-    """Check if a settings key has a corresponding ENV variable actually set in os.environ.
-    Checks both the default name (field name uppercased) and any explicit env= name from Field()."""
-    # Always check the uppercased field name (pydantic-settings default)
-    env_names = {key.upper()}
-    # Also check explicit env= parameter from Field() if present (stored in json_schema_extra)
-    field_info = Settings.model_fields.get(key)
-    if field_info and isinstance(getattr(field_info, 'json_schema_extra', None), dict):
-        explicit_env = field_info.json_schema_extra.get('env')
-        if explicit_env:
-            env_names.add(explicit_env.upper() if isinstance(explicit_env, str) else explicit_env)
-    return any(name in os.environ for name in env_names)
 
 
 def _effective_config_for_editable(settings_obj: Settings) -> Dict[str, Any]:
@@ -377,28 +365,17 @@ async def get_editable_settings(db: Session = Depends(get_db)):
     Get effective configuration for editing (editable keys only; secrets masked).
     Includes settings_edit_via_ui_enabled so frontend can show/hide edit form.
     When UI editing is enabled, reloads settings from DB so response is up to date.
-    Returns env_differs: keys where ENV differs from DB (to show warnings).
+    Returns env_locked_keys: keys where ENV is set (ENV always overrides DB).
     """
     if settings.edit_settings_via_ui_enabled:
         reload_settings(db)
-    env_differs = {}
-    if settings.edit_settings_via_ui_enabled and has_config_overrides_in_db(db):
-        # Compare ENV-only values with DB values, but only for keys where the ENV variable
-        # is actually explicitly set (not just using the default value)
-        env_only = Settings()  # Loads from ENV/defaults only
-        for key in EDITABLE_SETTING_KEYS:
-            if not _is_env_key_set(key):
-                continue  # ENV variable not set, no conflict possible
-            if hasattr(env_only, key) and hasattr(settings, key):
-                env_val = getattr(env_only, key)
-                db_val = getattr(settings, key)
-                if env_val != db_val:
-                    env_differs[key] = {"env": env_val, "db": db_val}
+    # Keys where ENV is explicitly set — these are locked (ENV wins over DB).
+    env_locked = sorted(get_env_locked_keys()) if settings.edit_settings_via_ui_enabled else []
     return {
         "settings_edit_via_ui_enabled": settings.edit_settings_via_ui_enabled,
         "settings_migrated": has_config_overrides_in_db(db),
         "configuration": _effective_config_for_editable(settings),
-        "env_differs": env_differs,
+        "env_locked_keys": env_locked,
     }
 
 
@@ -460,12 +437,10 @@ async def import_settings_from_env(db: Session = Depends(get_db)):
     Import current effective configuration (defaults + ENV + existing DB) into DB.
     Only allowed when SETTINGS_EDIT_VIA_UI_ENABLED is true.
     Use this to migrate from ENV to DB so you can later remove ENV vars.
-    Returns differences between ENV and DB after import (to show warnings).
+    Returns env_locked_keys: keys where ENV is set and overrides DB.
     """
     if not settings.edit_settings_via_ui_enabled:
         raise HTTPException(status_code=403, detail="Editing settings from UI is disabled. Set SETTINGS_EDIT_VIA_UI_ENABLED=true to enable.")
-    # Get ENV-only values (before DB overrides) for comparison
-    env_only = Settings()  # Loads from ENV/defaults only
     # Current effective config is in `settings` (includes DB overrides if any); export only editable keys
     overrides = {}
     for key in EDITABLE_SETTING_KEYS:
@@ -477,22 +452,12 @@ async def import_settings_from_env(db: Session = Depends(get_db)):
     mailcow_api.reload_config()
     oauth2_client.reload_config()
     reschedule_interval_jobs()
-    # After reload, settings now has DB values; compare with ENV to find differences
-    env_differs = {}
-    for key in EDITABLE_SETTING_KEYS:
-        if not _is_env_key_set(key):
-            continue  # ENV variable not set, no conflict possible
-        if hasattr(env_only, key) and hasattr(settings, key):
-            env_val = getattr(env_only, key)
-            db_val = getattr(settings, key)
-            if env_val != db_val:
-                env_differs[key] = {"env": env_val, "db": db_val}
     return {
         "message": "Configuration imported from current environment into DB.",
         "settings_edit_via_ui_enabled": True,
         "settings_migrated": True,
         "configuration": _effective_config_for_editable(settings),
-        "env_differs": env_differs,  # Keys where ENV differs from DB (user should remove ENV vars)
+        "env_locked_keys": sorted(get_env_locked_keys()),
     }
 
 

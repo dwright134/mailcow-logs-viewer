@@ -9,6 +9,7 @@ RUN apt-get update && \
     libpq-dev \
     postgresql-client \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies
@@ -29,11 +30,13 @@ COPY VERSION /app/VERSION
 RUN useradd -m -u 1000 appuser && \
     chown -R appuser:appuser /app
 
-USER appuser
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8080/api/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+ENTRYPOINT ["./entrypoint.sh"]

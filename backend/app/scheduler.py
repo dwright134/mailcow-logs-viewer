@@ -1303,7 +1303,6 @@ async def check_monitored_hosts_job(force: bool = False, send_notification: bool
         )
         from .services.smtp_service import send_notification_email, get_notification_email
         from .routers.domains import get_cached_server_ip
-        import dns.asyncresolver
         
         logger.info(f"Starting blacklist check job (send_notification={send_notification})...")
         
@@ -1352,9 +1351,8 @@ async def check_monitored_hosts_job(force: bool = False, send_notification: bool
                 # Simple IP validation and resolution if needed
                 if not re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", target_ip):
                     try:
-                        resolver = dns.asyncresolver.Resolver()
-                        resolver.nameservers = ['8.8.8.8', '1.1.1.1']
-                        answers = await resolver.resolve(target_ip, 'A')
+                        from app.services.dns_resolver import resolve as dns_resolve
+                        answers = await dns_resolve(target_ip, 'A', timeout=5)
                         if answers:
                             resolved_ip = str(answers[0])
                             logger.info(f"Resolved {target_ip} to {resolved_ip}")

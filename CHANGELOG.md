@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.2] - 2026-03-25
+
+### Added
+
+#### DNS-over-HTTPS (DoH) Fallback
+- **Automatic DoH fallback when UDP port 53 is blocked**: Some VPS providers block outgoing traffic on UDP port 53, preventing DNS record validation (SPF, DKIM, DMARC) and blacklist checks from working
+  - DNS queries now try traditional UDP resolvers first (fast path, no change for most users)
+  - If all UDP resolvers fail (timeout/blocked), automatically falls back to DNS-over-HTTPS (DoH) via Cloudflare and Google on port 443
+  - Applies to all DNS operations: domain DNS validation, blacklist checking, and hostname resolution
+  - No configuration needed — fallback is fully automatic
+
+#### Docker Data Directory Permissions Auto-Fix
+- **Automatic permission fix for bind-mounted data directory**: When Docker runs as root, the host `./data` directory is created with root ownership, preventing the application (running as UID 1000) from writing to it
+  - New `entrypoint.sh` script detects if the container is running as root
+  - If root: automatically fix host directory permissions
+  - If non-root: starts the application directly without any permission changes
+  - No user action required — the fix is built into the image
+
+### Fixed
+
+#### APP_PORT Ignored After Importing Settings to Database
+- **Port misconfiguration after .env import**: When using "Import from ENV" to migrate settings to the database, `APP_PORT` was incorrectly imported as an editable setting
+  - `APP_PORT` is a Docker-level setting controlling the host port mapping in `docker-compose.yml`, not an application-level setting
+  - After removing `APP_PORT` from `.env` (since it was "migrated" to DB), Docker Compose defaulted to port 8080, while the UI/DB still showed the configured port (e.g. 8083)
+  - `app_port` is now excluded from editable settings — it remains an ENV/Docker-only setting
+
+### Changed
+
+#### ENV Variables Now Override Database Settings (Lockout Prevention)
+- **Settings priority inverted**: ENV variables now always take precedence over database-stored values (new order: Default → DB → ENV)
+  - Previously, DB overrode ENV, meaning a configuration mistake in the UI (e.g., wrong OIDC URL, bad auth password) could lock users out with no way to fix it except editing the database directly
+  - Now, setting a value in `.env` / `docker-compose.yml` always overrides the DB value, acting as an "escape hatch" for lockout recovery
+  - Fields controlled by ENV are marked with a 🔒 lock icon in the Settings UI
+  - DB values are still saved and used as fallback when the ENV variable is removed
+
+---
+
 ## [2.3.1] - 2026-03-20
 
 ### Fixed

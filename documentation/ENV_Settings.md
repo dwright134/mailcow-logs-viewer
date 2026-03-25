@@ -26,7 +26,7 @@ These settings **must** be configured in your `.env` file:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `SETTINGS_EDIT_VIA_UI_ENABLED` | boolean | `false` | Allow editing app settings from the web UI (Settings tab). When enabled, values are stored in the database and override ENV (priority: Default → ENV → DB). **Must be in .env** and app must be restarted after change. |
+| `SETTINGS_EDIT_VIA_UI_ENABLED` | boolean | `false` | Allow editing app settings from the web UI (Settings tab). When enabled, values are stored in the database (priority: Default → DB → ENV; ENV always wins). **Must be in .env** and app must be restarted after change. |
 
 ---
 
@@ -188,10 +188,10 @@ These settings **must** be configured in your `.env` file:
 When `SETTINGS_EDIT_VIA_UI_ENABLED=true`, configuration is resolved in this order (later overrides earlier):
 
 1. **Defaults** (from the application)
-2. **ENV** (environment variables / `.env`)
-3. **DB** (values stored via the web UI)
+2. **DB** (values stored via the web UI)
+3. **ENV** (environment variables — **always win** when set)
 
-So: DB overrides ENV, and ENV overrides defaults. After you use **Import from ENV to DB** in the UI, you can remove or change ENV vars and the values in the DB will still apply.
+So: ENV overrides DB, and DB overrides defaults. If an environment variable is explicitly set, it always takes precedence over the value stored in the database. This prevents lockout: if you make a configuration mistake in the UI (e.g., wrong OIDC URL or password typo), you can fix it by setting the correct value in your `.env` / `docker-compose.yml` and restarting.
 
 ---
 

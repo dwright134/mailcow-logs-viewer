@@ -20,10 +20,20 @@ Restart the application. The Settings tab will then show an **Edit configuration
 Configuration is resolved in this order (later overrides earlier):
 
 1. **Defaults** (from the application)
-2. **ENV** (environment variables / `.env`)
-3. **DB** (values stored via the web UI)
+2. **DB** (values stored via the web UI)
+3. **ENV** (environment variables — **always win** when set)
 
-So: DB overrides ENV, and ENV overrides defaults. After you use **Import from ENV to DB**, you can remove or change ENV vars and the values in the DB will still apply.
+So: ENV overrides DB, and DB overrides defaults. If an environment variable is explicitly set, it takes precedence over the value stored in the database. This prevents lockout: if you make a configuration mistake in the UI, you can always fix it by setting the correct value in your `.env` / `docker-compose.yml` and restarting.
+
+Fields where an ENV variable is active are marked with a 🔒 lock icon in the UI. You can still edit the DB value (it will be used as a fallback when the ENV variable is removed).
+
+## Lockout recovery
+
+If you accidentally lock yourself out (e.g., wrong OIDC URL or password typo):
+
+1. Set the correct value in your `.env` file or `docker-compose.yml`
+2. Restart the application (`docker compose up -d`)
+3. The ENV value will override the bad DB value and restore access
 
 ## What can be edited
 

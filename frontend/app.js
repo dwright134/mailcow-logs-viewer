@@ -231,7 +231,7 @@ async function authenticatedFetch(url, options = {}) {
     const headers = {
         ...options.headers,
     };
-    
+
     // Only add Basic Auth header if we have credentials (not for OAuth2 sessions)
     // OAuth2 sessions use cookies which are sent automatically
     const authHeader = getAuthHeader();
@@ -327,7 +327,7 @@ async function handleLogout() {
     } catch (e) {
         // Fall through to Basic Auth logout
     }
-    
+
     // Basic Auth logout
     clearAuthCredentials();
     // Redirect to login page
@@ -4770,70 +4770,94 @@ var SETTINGS_FIELD_DESCRIPTIONS = {
 // Edit form tabs (same order as env.example sections) with descriptions from env.example
 // Keys grouped logically within each tab
 var SETTINGS_EDIT_TABS = [
-    { id: 'mailcow', label: 'Mailcow', description: 'Your mailcow instance URL and API credentials. API key needs read access to logs (generate from System → API in mailcow admin). Set verify SSL to false only for development with self-signed certificates.', groups: [
-        { label: 'Connection', keys: ['mailcow_url', 'mailcow_api_key'] },
-        { label: 'Advanced', keys: ['mailcow_api_timeout', 'mailcow_api_verify_ssl'] }
-    ]},
-    { id: 'fetch', label: 'Fetch', description: 'How often to fetch logs from mailcow and how many records per request. Lower interval = more frequent updates, higher load. Retention: how many days to keep logs in the database (older logs are deleted).', groups: [
-        { label: 'Timing', keys: ['fetch_interval'] },
-        { label: 'Counts per Request', keys: ['fetch_count_postfix', 'fetch_count_rspamd', 'fetch_count_netfilter'] },
-        { label: 'Retention', keys: ['retention_days'] }
-    ]},
-    { id: 'correlation', label: 'Correlation', description: 'Correlation links Postfix logs to messages. Max age: stop searching for correlations older than this (minutes). Check interval: how often to run the correlation job (seconds).', groups: [
-        { label: 'Settings', keys: ['max_correlation_age_minutes', 'correlation_check_interval'] }
-    ]},
-    { id: 'application', label: 'Application', description: 'Web app port, title and logo. Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL. Debug mode shows detailed errors (do not enable in production). Search/CSV limits and scheduler worker count.', groups: [
-        { label: 'Basic', keys: ['app_port', 'app_title', 'app_logo_url'] },
-        { label: 'Logging', keys: ['log_level', 'debug'] },
-        { label: 'Limits', keys: ['max_search_results', 'csv_export_limit', 'scheduler_workers'] }
-    ]},
-    { id: 'blacklist', label: 'Blacklist', description: 'Comma-separated email addresses to hide from logs (e.g. BCC archive, monitoring addresses). These emails are not stored in the database.', groups: [
-        { label: 'Settings', keys: ['blacklist_emails'] }
-    ]},
-    { id: 'auth', label: 'Authentication', description: 'Basic HTTP authentication. When enabled, all pages and API require login. Use a strong password in production.', groups: [
-        { label: 'Basic Auth', keys: ['basic_auth_enabled', 'auth_username', 'auth_password'] }
-    ]},
-    { id: 'oauth2', label: 'OAuth2', description: 'OAuth2/OIDC login (e.g. Mailcow, Keycloak). Set issuer URL for auto-discovery, or set authorization/token/userinfo URLs manually. Session secret is required when OAuth2 is enabled; session expiry is in hours.', groups: [
-        { label: 'Enable', keys: ['oauth2_enabled'] },
-        { label: 'Provider', keys: ['oauth2_provider_name'] },
-        { label: 'Discovery (Auto)', keys: ['oauth2_issuer_url', 'oauth2_use_oidc_discovery'] },
-        { label: 'Endpoints (Manual)', keys: ['oauth2_authorization_url', 'oauth2_token_url', 'oauth2_userinfo_url'] },
-        { label: 'Credentials', keys: ['oauth2_client_id', 'oauth2_client_secret', 'oauth2_redirect_uri', 'oauth2_scopes'] },
-        { label: 'Session', keys: ['session_secret_key', 'session_expiry_hours'] }
-    ]},
-    { id: 'smtp', label: 'SMTP', description: 'SMTP for sending notifications (alerts, weekly summary). Relay mode: for local relay servers that do not require authentication (only host and from address needed).', groups: [
-        { label: 'Enable', keys: ['smtp_enabled'] },
-        { label: 'Server', keys: ['smtp_host', 'smtp_port'] },
-        { label: 'Security', keys: ['smtp_use_tls', 'smtp_use_ssl'] },
-        { label: 'Authentication', keys: ['smtp_user', 'smtp_password', 'smtp_relay_mode'] },
-        { label: 'From Address', keys: ['smtp_from'] }
-    ]},
-    { id: 'notifications', label: 'Alerts', description: 'Email addresses for system notifications and alerts. Admin email is used for general notifications; other emails override for specific alert types.', groups: [
-        { label: 'Addresses', keys: ['admin_email', 'blacklist_alert_email', 'dmarc_error_email', 'enable_weekly_summary'] }
-    ]},
-    { id: 'dmarc', label: 'DMARC', description: 'DMARC reports retention (days). Allow manual upload of reports via UI. Allow deleting DMARC/TLS reports from the UI. Weekly summary: enable email report sent to admin.', groups: [
-        { label: 'Retention', keys: ['dmarc_retention_days'] },
-        { label: 'Features', keys: ['dmarc_manual_upload_enabled', 'dmarc_allow_report_delete'] }
-    ]},
-    { id: 'dmarc_imap', label: 'DMARC IMAP', description: 'Automatically import DMARC reports from an IMAP mailbox. Set host, port, user, password and folder (e.g. INBOX). Delete after: remove emails after processing. Interval in seconds; run on startup to sync once at start.', groups: [
-        { label: 'Enable', keys: ['dmarc_imap_enabled'] },
-        { label: 'Connection', keys: ['dmarc_imap_host', 'dmarc_imap_port', 'dmarc_imap_use_ssl'] },
-        { label: 'Authentication', keys: ['dmarc_imap_user', 'dmarc_imap_password'] },
-        { label: 'Settings', keys: ['dmarc_imap_folder', 'dmarc_imap_delete_after', 'dmarc_imap_interval', 'dmarc_imap_run_on_startup', 'dmarc_imap_batch_size'] }
-    ]},
-    { id: 'maxmind', label: 'MaxMind', description: 'MaxMind GeoIP database configuration for IP geolocation. Account ID and License Key are required to download GeoLite2 databases. Status shows whether databases are configured and up to date.', groups: [
-        { label: 'Credentials', keys: ['maxmind_account_id', 'maxmind_license_key'] },
-        { label: 'Status', keys: [] }  // Status will be displayed separately, not as editable field
-    ]}
+    {
+        id: 'mailcow', label: 'Mailcow', description: 'Your mailcow instance URL and API credentials. API key needs read access to logs (generate from System → API in mailcow admin). Set verify SSL to false only for development with self-signed certificates.', groups: [
+            { label: 'Connection', keys: ['mailcow_url', 'mailcow_api_key'] },
+            { label: 'Advanced', keys: ['mailcow_api_timeout', 'mailcow_api_verify_ssl'] }
+        ]
+    },
+    {
+        id: 'fetch', label: 'Fetch', description: 'How often to fetch logs from mailcow and how many records per request. Lower interval = more frequent updates, higher load. Retention: how many days to keep logs in the database (older logs are deleted).', groups: [
+            { label: 'Timing', keys: ['fetch_interval'] },
+            { label: 'Counts per Request', keys: ['fetch_count_postfix', 'fetch_count_rspamd', 'fetch_count_netfilter'] },
+            { label: 'Retention', keys: ['retention_days'] }
+        ]
+    },
+    {
+        id: 'correlation', label: 'Correlation', description: 'Correlation links Postfix logs to messages. Max age: stop searching for correlations older than this (minutes). Check interval: how often to run the correlation job (seconds).', groups: [
+            { label: 'Settings', keys: ['max_correlation_age_minutes', 'correlation_check_interval'] }
+        ]
+    },
+    {
+        id: 'application', label: 'Application', description: 'Web app port, title and logo. Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL. Debug mode shows detailed errors (do not enable in production). Search/CSV limits and scheduler worker count.', groups: [
+            { label: 'Basic', keys: ['app_port', 'app_title', 'app_logo_url'] },
+            { label: 'Logging', keys: ['log_level', 'debug'] },
+            { label: 'Limits', keys: ['max_search_results', 'csv_export_limit', 'scheduler_workers'] }
+        ]
+    },
+    {
+        id: 'blacklist', label: 'Blacklist', description: 'Comma-separated email addresses to hide from logs (e.g. BCC archive, monitoring addresses). These emails are not stored in the database.', groups: [
+            { label: 'Settings', keys: ['blacklist_emails'] }
+        ]
+    },
+    {
+        id: 'auth', label: 'Authentication', description: 'Basic HTTP authentication. When enabled, all pages and API require login. Use a strong password in production.', groups: [
+            { label: 'Basic Auth', keys: ['basic_auth_enabled', 'auth_username', 'auth_password'] }
+        ]
+    },
+    {
+        id: 'oauth2', label: 'OAuth2', description: 'OAuth2/OIDC login (e.g. Mailcow, Keycloak). Set issuer URL for auto-discovery, or set authorization/token/userinfo URLs manually. Session secret is required when OAuth2 is enabled; session expiry is in hours.', groups: [
+            { label: 'Enable', keys: ['oauth2_enabled'] },
+            { label: 'Provider', keys: ['oauth2_provider_name'] },
+            { label: 'Discovery (Auto)', keys: ['oauth2_issuer_url', 'oauth2_use_oidc_discovery'] },
+            { label: 'Endpoints (Manual)', keys: ['oauth2_authorization_url', 'oauth2_token_url', 'oauth2_userinfo_url'] },
+            { label: 'Credentials', keys: ['oauth2_client_id', 'oauth2_client_secret', 'oauth2_redirect_uri', 'oauth2_scopes'] },
+            { label: 'Session', keys: ['session_secret_key', 'session_expiry_hours'] }
+        ]
+    },
+    {
+        id: 'smtp', label: 'SMTP', description: 'SMTP for sending notifications (alerts, weekly summary). Relay mode: for local relay servers that do not require authentication (only host and from address needed).', groups: [
+            { label: 'Enable', keys: ['smtp_enabled'] },
+            { label: 'Server', keys: ['smtp_host', 'smtp_port'] },
+            { label: 'Security', keys: ['smtp_use_tls', 'smtp_use_ssl'] },
+            { label: 'Authentication', keys: ['smtp_user', 'smtp_password', 'smtp_relay_mode'] },
+            { label: 'From Address', keys: ['smtp_from'] }
+        ]
+    },
+    {
+        id: 'notifications', label: 'Alerts', description: 'Email addresses for system notifications and alerts. Admin email is used for general notifications; other emails override for specific alert types.', groups: [
+            { label: 'Addresses', keys: ['admin_email', 'blacklist_alert_email', 'dmarc_error_email', 'enable_weekly_summary'] }
+        ]
+    },
+    {
+        id: 'dmarc', label: 'DMARC', description: 'DMARC reports retention (days). Allow manual upload of reports via UI. Allow deleting DMARC/TLS reports from the UI. Weekly summary: enable email report sent to admin.', groups: [
+            { label: 'Retention', keys: ['dmarc_retention_days'] },
+            { label: 'Features', keys: ['dmarc_manual_upload_enabled', 'dmarc_allow_report_delete'] }
+        ]
+    },
+    {
+        id: 'dmarc_imap', label: 'DMARC IMAP', description: 'Automatically import DMARC reports from an IMAP mailbox. Set host, port, user, password and folder (e.g. INBOX). Delete after: remove emails after processing. Interval in seconds; run on startup to sync once at start.', groups: [
+            { label: 'Enable', keys: ['dmarc_imap_enabled'] },
+            { label: 'Connection', keys: ['dmarc_imap_host', 'dmarc_imap_port', 'dmarc_imap_use_ssl'] },
+            { label: 'Authentication', keys: ['dmarc_imap_user', 'dmarc_imap_password'] },
+            { label: 'Settings', keys: ['dmarc_imap_folder', 'dmarc_imap_delete_after', 'dmarc_imap_interval', 'dmarc_imap_run_on_startup', 'dmarc_imap_batch_size'] }
+        ]
+    },
+    {
+        id: 'maxmind', label: 'MaxMind', description: 'MaxMind GeoIP database configuration for IP geolocation. Account ID and License Key are required to download GeoLite2 databases. Status shows whether databases are configured and up to date.', groups: [
+            { label: 'Credentials', keys: ['maxmind_account_id', 'maxmind_license_key'] },
+            { label: 'Status', keys: [] }  // Status will be displayed separately, not as editable field
+        ]
+    }
 ];
 
-function renderSettingsEditField(key, value, sensitiveKeys, description, envDiffers) {
+function renderSettingsEditField(key, value, sensitiveKeys, description, envLocked) {
     const isBool = typeof value === 'boolean';
     const isNum = typeof value === 'number';
     const sensitive = sensitiveKeys.includes(key);
     const displayVal = value === null || value === undefined ? '' : (isBool ? value : String(value));
     // Convert key to label with proper acronym capitalization (SSL, IMAP, TLS, etc.)
-    let label = key.replace(/_/g, ' ').replace(/\b\w/g, function(l) { return l.toUpperCase(); });
+    let label = key.replace(/_/g, ' ').replace(/\b\w/g, function (l) { return l.toUpperCase(); });
     // Fix common acronyms
     label = label.replace(/\bSsl\b/gi, 'SSL').replace(/\bImap\b/gi, 'IMAP').replace(/\bTls\b/gi, 'TLS')
         .replace(/\bOauth\b/gi, 'OAuth').replace(/\bOidc\b/gi, 'OIDC').replace(/\bApi\b/gi, 'API')
@@ -4842,20 +4866,22 @@ function renderSettingsEditField(key, value, sensitiveKeys, description, envDiff
         .replace(/\bSmtp\b/gi, 'SMTP').replace(/\bCsv\b/gi, 'CSV').replace(/\bEnv\b/gi, 'ENV')
         .replace(/\bDb\b/gi, 'DB');
     const descHtml = (description && description.trim()) ? '<p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 mb-1">' + escapeHtml(description) + '</p>' : '';
-    const warningHtml = envDiffers ? '<p class="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1"><svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>This value differs from ENV. Remove the ENV variable to use the DB value.</p>' : '';
+    const disabledAttr = envLocked ? 'disabled' : '';
+    const envLockedHtml = envLocked ? '<p class="text-xs text-blue-600 dark:text-blue-400 mt-1 flex items-center gap-1"><svg class="w-3 h-3 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"></path></svg>Controlled by ENV variable - cannot be changed from here.</p>' : '';
+    const labelLockIcon = envLocked ? ' <svg class="w-3.5 h-3.5 inline-block text-blue-500 dark:text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"></path></svg>' : '';
     if (isBool) {
-        return '<div class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-700/30 rounded">' +
-            '<input type="checkbox" id="edit-' + key + '" name="' + key + '" ' + (displayVal ? 'checked' : '') + ' class="rounded border-gray-300 dark:border-gray-600">' +
-            '<div><label for="edit-' + key + '" class="text-sm font-medium text-gray-700 dark:text-gray-300">' + escapeHtml(label) + '</label>' + descHtml + warningHtml + '</div></div>';
+        return '<div class="flex items-center gap-2 p-2 ' + (envLocked ? 'bg-gray-100 dark:bg-gray-800/50 opacity-60' : 'bg-gray-50 dark:bg-gray-700/30') + ' rounded">' +
+            '<input type="checkbox" id="edit-' + key + '" name="' + key + '" ' + (displayVal ? 'checked' : '') + ' ' + disabledAttr + ' class="rounded border-gray-300 dark:border-gray-600">' +
+            '<div><label for="edit-' + key + '" class="text-sm font-medium text-gray-700 dark:text-gray-300">' + escapeHtml(label) + labelLockIcon + '</label>' + descHtml + envLockedHtml + '</div></div>';
     }
     const inputType = sensitive ? 'password' : (isNum ? 'number' : 'text');
-    const placeholder = sensitive ? 'Leave empty to keep current' : '';
+    const placeholder = envLocked ? 'Controlled by ENV' : (sensitive ? 'Leave empty to keep current' : '');
     const valAttr = (isBool ? '' : displayVal);
-    return '<div><label for="edit-' + key + '" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">' + escapeHtml(label) + '</label>' +
+    return '<div class="' + (envLocked ? 'opacity-60' : '') + '"><label for="edit-' + key + '" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">' + escapeHtml(label) + labelLockIcon + '</label>' +
         descHtml +
-        '<input type="' + inputType + '" id="edit-' + key + '" name="' + key + '" value="' + escapeHtml(valAttr) + '" placeholder="' + escapeHtml(placeholder) + '" ' +
-        'class="w-full rounded border ' + (envDiffers ? 'border-amber-300 dark:border-amber-600' : 'border-gray-300 dark:border-gray-600') + ' bg-white dark:bg-gray-700 text-gray-900 dark:text-white px-3 py-2 text-sm">' +
-        warningHtml + '</div>';
+        '<input type="' + inputType + '" id="edit-' + key + '" name="' + key + '" value="' + escapeHtml(valAttr) + '" placeholder="' + escapeHtml(placeholder) + '" ' + disabledAttr + ' ' +
+        'class="w-full rounded border ' + (envLocked ? 'border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed' : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white') + ' px-3 py-2 text-sm">' +
+        envLockedHtml + '</div>';
 }
 
 async function loadSettings() {
@@ -4888,7 +4914,7 @@ async function loadSettings() {
                 if (data.settings_edit_via_ui_enabled === undefined) data.settings_edit_via_ui_enabled = editableData.settings_edit_via_ui_enabled;
                 if (data.settings_edit_via_ui_enabled && !data.editable_config) data.editable_config = editableData.configuration || {};
                 if (editableData.settings_migrated !== undefined) data.settings_migrated = editableData.settings_migrated;
-                if (editableData.env_differs) data.env_differs = editableData.env_differs;
+                if (editableData.env_locked_keys) data.env_locked_keys = editableData.env_locked_keys;
             }
         } catch (e) {
             console.warn('Could not load editable settings:', e);
@@ -5297,31 +5323,31 @@ function renderSettings(content, data) {
             </div>
         </div>
 
-        ${data.settings_edit_via_ui_enabled && data.editable_config ? (function() {
-            const sensitiveKeys = ['mailcow_api_key','auth_password','oauth2_client_secret','smtp_password','dmarc_imap_password','session_secret_key','maxmind_license_key'];
-            const envDiffers = data.env_differs || {};
-            const allAssignedKeys = new Set(SETTINGS_EDIT_TABS.flatMap(function(t){ return (t.groups || []).flatMap(function(g){ return g.keys; }); }));
+        ${data.settings_edit_via_ui_enabled && data.editable_config ? (function () {
+            const sensitiveKeys = ['mailcow_api_key', 'auth_password', 'oauth2_client_secret', 'smtp_password', 'dmarc_imap_password', 'session_secret_key', 'maxmind_license_key'];
+            const envLockedKeys = new Set(data.env_locked_keys || []);
+            const allAssignedKeys = new Set(SETTINGS_EDIT_TABS.flatMap(function (t) { return (t.groups || []).flatMap(function (g) { return g.keys; }); }));
             const configKeys = Object.keys(data.editable_config);
-            const otherKeys = configKeys.filter(function(k){ return !allAssignedKeys.has(k); });
+            const otherKeys = configKeys.filter(function (k) { return !allAssignedKeys.has(k); });
             const tabs = otherKeys.length ? SETTINGS_EDIT_TABS.concat([{ id: 'other', label: 'Other', groups: [{ label: 'Settings', keys: otherKeys }] }]) : SETTINGS_EDIT_TABS;
             let tabsHtml = '<div class="flex flex-wrap gap-1 border-b border-gray-200 dark:border-gray-700 mb-4">';
-            tabs.forEach(function(tab, idx) {
-                const allKeysInTab = (tab.groups || []).flatMap(function(g){ return g.keys; });
-                const keysInTab = allKeysInTab.filter(function(k){ return data.editable_config[k] !== undefined; });
+            tabs.forEach(function (tab, idx) {
+                const allKeysInTab = (tab.groups || []).flatMap(function (g) { return g.keys; });
+                const keysInTab = allKeysInTab.filter(function (k) { return data.editable_config[k] !== undefined; });
                 if (keysInTab.length === 0 && tab.id !== 'maxmind') return;
                 const active = idx === 0 ? ' bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 border-b-2 border-blue-500' : ' text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700';
                 tabsHtml += '<button type="button" class="settings-edit-tab px-3 py-2 text-sm font-medium rounded-t border-b-2 border-transparent' + active + '" data-tab="' + tab.id + '">' + escapeHtml(tab.label) + '</button>';
             });
             tabsHtml += '</div><div class="space-y-6">';
-            tabs.forEach(function(tab, idx) {
-                const allKeysInTab = (tab.groups || []).flatMap(function(g){ return g.keys; });
-                const keysInTab = allKeysInTab.filter(function(k){ return data.editable_config[k] !== undefined; });
+            tabs.forEach(function (tab, idx) {
+                const allKeysInTab = (tab.groups || []).flatMap(function (g) { return g.keys; });
+                const keysInTab = allKeysInTab.filter(function (k) { return data.editable_config[k] !== undefined; });
                 // Show tab if it has keys OR if it's maxmind tab (which shows status)
                 if (keysInTab.length === 0 && tab.id !== 'maxmind') return;
                 const hidden = idx !== 0 ? ' hidden' : '';
                 const desc = tab.description ? '<p class="text-sm text-gray-500 dark:text-gray-400 mb-4">' + escapeHtml(tab.description) + '</p>' : '';
                 tabsHtml += '<div id="settings-tab-panel-' + tab.id + '" class="settings-edit-panel' + hidden + '">' + desc;
-                
+
                 // Special handling for SMTP tab - add Global SMTP Configuration
                 if (tab.id === 'smtp' && data.smtp_configuration) {
                     tabsHtml += '<div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700/30 rounded-lg"><h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Status</h4><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
@@ -5334,7 +5360,7 @@ function renderSettings(content, data) {
                     }
                     tabsHtml += '</div></div>';
                 }
-                
+
                 // Special handling for DMARC IMAP tab - add DMARC Management
                 if (tab.id === 'dmarc_imap' && data.dmarc_configuration) {
                     tabsHtml += '<div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700/30 rounded-lg"><h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Status</h4><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">';
@@ -5349,19 +5375,19 @@ function renderSettings(content, data) {
                     }
                     tabsHtml += '</div></div>';
                 }
-                
+
                 // Special handling for MaxMind tab
                 if (tab.id === 'maxmind') {
                     tabsHtml += '<div class="mb-6 p-4 bg-gray-50 dark:bg-gray-700/30 rounded-lg"><h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Status</h4><div class="p-4 bg-white dark:bg-gray-800 rounded-lg">';
                     tabsHtml += '<p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">MaxMind Status</p><p class="text-sm text-gray-900 dark:text-white mt-1">' + renderMaxMindStatus(data.configuration.maxmind_status) + '</p></div></div>';
                 }
-                
-                (tab.groups || []).forEach(function(group) {
-                    const groupKeys = group.keys.filter(function(k){ return data.editable_config[k] !== undefined; });
+
+                (tab.groups || []).forEach(function (group) {
+                    const groupKeys = group.keys.filter(function (k) { return data.editable_config[k] !== undefined; });
                     if (groupKeys.length === 0) return;
                     tabsHtml += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">' + escapeHtml(group.label) + '</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
-                    groupKeys.forEach(function(key) {
-                        tabsHtml += renderSettingsEditField(key, data.editable_config[key], sensitiveKeys, SETTINGS_FIELD_DESCRIPTIONS[key] || '', envDiffers[key]);
+                    groupKeys.forEach(function (key) {
+                        tabsHtml += renderSettingsEditField(key, data.editable_config[key], sensitiveKeys, SETTINGS_FIELD_DESCRIPTIONS[key] || '', envLockedKeys.has(key));
                     });
                     tabsHtml += '</div></div>';
                 });
@@ -5379,7 +5405,7 @@ function renderSettings(content, data) {
                     Edit configuration
                 </h3>
                 <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                    Priority: Default → ENV → DB. After importing from ENV you can remove ENV vars and manage from here.
+                    Priority: Default → DB → ENV. Environment variables always override DB values and cannot be changed from here.
                 </p>
             </div>
             <div class="p-4 space-y-4">
@@ -5412,14 +5438,14 @@ function renderSettings(content, data) {
                         <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">SMTP Enabled</p>
                         <div class="flex items-center gap-2 flex-wrap">
                             ${data.smtp_configuration?.enabled ?
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
                                     <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
                                     </svg>
                                     Enabled
                                 </span>` :
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400">Disabled</span>`
-        }
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400">Disabled</span>`
+            }
                             <button onclick="testSmtpConnection()" class="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-medium transition-colors duration-200 flex items-center gap-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
@@ -5458,14 +5484,14 @@ function renderSettings(content, data) {
                         <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">IMAP Auto-Import</p>
                         <div class="flex items-center gap-2 flex-wrap">
                             ${data.dmarc_configuration?.imap_sync_enabled ?
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
                                     <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
                                     </svg>
                                     Enabled
                                 </span>` :
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400">Disabled</span>`
-        }
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-400">Disabled</span>`
+            }
                             <button onclick="testImapConnection()" class="px-3 py-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded text-xs font-medium transition-colors duration-200 flex items-center gap-1.5">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
@@ -5478,14 +5504,14 @@ function renderSettings(content, data) {
                         <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Manual Upload</p>
                         <p class="text-sm text-gray-900 dark:text-white">
                             ${data.dmarc_configuration?.manual_upload_enabled ?
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
                                     <svg class="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
                                         <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path>
                                     </svg>
                                     Enabled
                                 </span>` :
-            `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Disabled</span>`
-        }
+                `<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400">Disabled</span>`
+            }
                         </p>
                     </div>
                     ${data.dmarc_configuration?.imap_sync_enabled ? `
@@ -5640,16 +5666,16 @@ function renderSettings(content, data) {
 
     // Edit configuration: form submit, Import from ENV, and tab switching
     if (data.settings_edit_via_ui_enabled && data.editable_config) {
-        content.querySelectorAll('.settings-edit-tab').forEach(function(btn) {
-            btn.addEventListener('click', function() {
+        content.querySelectorAll('.settings-edit-tab').forEach(function (btn) {
+            btn.addEventListener('click', function () {
                 const tabId = btn.getAttribute('data-tab');
-                content.querySelectorAll('.settings-edit-tab').forEach(function(b) {
+                content.querySelectorAll('.settings-edit-tab').forEach(function (b) {
                     b.classList.remove('bg-blue-100', 'dark:bg-blue-900/40', 'text-blue-700', 'dark:text-blue-300', 'border-blue-500');
                     b.classList.add('text-gray-600', 'dark:text-gray-400');
                 });
                 btn.classList.remove('text-gray-600', 'dark:text-gray-400');
                 btn.classList.add('bg-blue-100', 'dark:bg-blue-900/40', 'text-blue-700', 'dark:text-blue-300', 'border-b-2', 'border-blue-500');
-                content.querySelectorAll('.settings-edit-panel').forEach(function(panel) {
+                content.querySelectorAll('.settings-edit-panel').forEach(function (panel) {
                     panel.classList.add('hidden');
                 });
                 var panel = content.querySelector('#settings-tab-panel-' + tabId);
@@ -5662,7 +5688,7 @@ function renderSettings(content, data) {
             form.onsubmit = async (e) => {
                 e.preventDefault();
                 const payload = {};
-                const sensitiveKeys = ['mailcow_api_key','auth_password','oauth2_client_secret','smtp_password','dmarc_imap_password','session_secret_key','maxmind_license_key'];
+                const sensitiveKeys = ['mailcow_api_key', 'auth_password', 'oauth2_client_secret', 'smtp_password', 'dmarc_imap_password', 'session_secret_key', 'maxmind_license_key'];
                 for (const key of Object.keys(data.editable_config)) {
                     const el = form.querySelector('[name="' + key + '"]');
                     if (!el) continue;
@@ -5700,8 +5726,8 @@ function renderSettings(content, data) {
                     const res = await authenticatedFetch('/api/settings/import-from-env', { method: 'POST' });
                     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
                     const result = await res.json();
-                    if (result.env_differs && Object.keys(result.env_differs).length > 0) {
-                        data.env_differs = result.env_differs;
+                    if (result.env_locked_keys) {
+                        data.env_locked_keys = result.env_locked_keys;
                     }
                     await loadSettings();
                 } catch (err) {

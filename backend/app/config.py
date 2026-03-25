@@ -464,7 +464,7 @@ class Settings(BaseSettings):
 
 def _get_editable_setting_keys() -> frozenset:
     """All Settings field names that are editable from UI (excludes DB keys, UI-edit flag, and deprecated/legacy fields)."""
-    excluded = _DB_ONLY_KEYS | {_EDIT_VIA_UI_FLAG_KEY, "auth_enabled", "tz"}  # auth_enabled deprecated, tz legacy
+    excluded = _DB_ONLY_KEYS | {_EDIT_VIA_UI_FLAG_KEY, "auth_enabled", "tz", "app_port"}  # auth_enabled deprecated, tz legacy, app_port is Docker-level
     keys = set(Settings.model_fields.keys()) - excluded
     return frozenset(keys)
 
@@ -477,11 +477,53 @@ def _get_field_annotations() -> Dict[str, Any]:
 EDITABLE_SETTING_KEYS = _get_editable_setting_keys()
 
 
+def _is_env_key_set(key: str) -> bool:
+    """Check if a settings key has a corresponding ENV variable actually set in os.environ.
+
+    Checks both the default name (field name uppercased, pydantic-settings default)
+    and any explicit ``env=`` name from Field().
+
+    Covers every field in Settings:
+    - Fields without explicit env= (e.g. ``mailcow_url``) → checks ``MAILCOW_URL``
+    - Fields with explicit env= (e.g. ``smtp_host``, env='SMTP_HOST') → checks ``SMTP_HOST``
+    - Fields where field name uppercased == explicit env (most cases) → deduped via set
+    """
+    # Always check the uppercased field name (pydantic-settings default behaviour)
+    env_names = {key.upper()}
+    # Also check explicit env= parameter from Field() if present
+    # In pydantic-settings 2.x the env= kwarg is stored in json_schema_extra
+    field_info = Settings.model_fields.get(key)
+    if field_info:
+        jse = getattr(field_info, 'json_schema_extra', None)
+        if isinstance(jse, dict):
+            explicit_env = jse.get('env')
+            if explicit_env:
+                env_names.add(explicit_env.upper() if isinstance(explicit_env, str) else str(explicit_env).upper())
+    return any(name in os.environ for name in env_names)
+
+
+def get_env_locked_keys() -> frozenset:
+    """Return the set of editable keys where an ENV variable is explicitly set.
+
+    These keys are "locked" — their effective value comes from ENV, not DB.
+    """
+    return frozenset(k for k in EDITABLE_SETTING_KEYS if _is_env_key_set(k))
+
+
 def build_settings(db: Optional[Any] = None) -> Settings:
     """
-    Build effective Settings: defaults -> ENV -> DB overrides (when settings_edit_via_ui_enabled and db given).
+    Build effective Settings: defaults -> DB -> ENV overrides.
+
+    Priority order (later wins):
+      1. Application defaults
+      2. DB overrides  (when SETTINGS_EDIT_VIA_UI_ENABLED and db given)
+      3. ENV variables (always win when explicitly set)
+
+    This prevents lockout: if a user makes a mistake in the UI (e.g. wrong
+    OIDC URL or bad auth password), they can fix it by setting the correct
+    value in ENV / docker-compose.yml and restarting.
     """
-    base = Settings()
+    base = Settings()  # loads defaults + ENV
     if not base.edit_settings_via_ui_enabled or db is None:
         return base
     try:
@@ -489,8 +531,11 @@ def build_settings(db: Optional[Any] = None) -> Settings:
         overrides = get_config_overrides_from_db(db, _get_field_annotations())
         if not overrides:
             return base
-        # Only apply overrides for keys that are in EDITABLE_SETTING_KEYS
-        allowed = {k: v for k, v in overrides.items() if k in EDITABLE_SETTING_KEYS}
+        # Only apply DB overrides for editable keys where ENV is NOT explicitly set.
+        # When an ENV variable is set, it takes precedence over the DB value.
+        env_locked = get_env_locked_keys()
+        allowed = {k: v for k, v in overrides.items()
+                   if k in EDITABLE_SETTING_KEYS and k not in env_locked}
         if not allowed:
             return base
         merged = base.model_copy(update=allowed)

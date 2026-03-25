@@ -2126,12 +2126,7 @@ Returns all settings that can be edited via the web UI, along with feature flags
     "dmarc_imap_run_on_startup": true,
     "dmarc_imap_batch_size": 10
   },
-  "env_differs": {
-    "mailcow_url": {
-      "env": "https://old.example.com",
-      "db": "https://mail.example.com"
-    }
-  }
+  "env_locked_keys": ["mailcow_url", "mailcow_api_key"]
 }
 ```
 
@@ -2139,7 +2134,7 @@ Returns all settings that can be edited via the web UI, along with feature flags
 - `settings_edit_via_ui_enabled`: Boolean indicating if UI editing is enabled
 - `settings_migrated`: Boolean indicating if settings have been migrated from ENV to DB
 - `configuration`: Dictionary of all editable settings (sensitive fields are masked with `********`)
-- `env_differs`: Dictionary of settings where ENV variable differs from DB value (only shown when `settings_migrated=true`)
+- `env_locked_keys`: Array of setting keys where an ENV variable is explicitly set (ENV always overrides DB for these keys)
 
 **Sensitive Fields (Masked):**
 - `mailcow_api_key`
@@ -2154,7 +2149,7 @@ Returns all settings that can be edited via the web UI, along with feature flags
 - Automatically reloads settings from database if UI editing is enabled
 - Sensitive fields are masked with `********` in responses
 - Empty sensitive fields are returned as empty string `""`
-- `env_differs` helps identify which ENV variables should be removed after migration
+- `env_locked_keys` shows which fields are controlled by ENV and cannot be overridden from the UI
 - Only editable settings are included (PostgreSQL database settings are excluded)
 
 ---
@@ -2256,12 +2251,7 @@ Migrates all current effective settings (from defaults + ENV + existing DB) into
     "fetch_interval": 60,
     "retention_days": 7
   },
-  "env_differs": {
-    "mailcow_url": {
-      "env": "https://old.example.com",
-      "db": "https://mail.example.com"
-    }
-  }
+  "env_locked_keys": ["mailcow_url", "mailcow_api_key"]
 }
 ```
 
@@ -2270,7 +2260,7 @@ Migrates all current effective settings (from defaults + ENV + existing DB) into
 - `settings_edit_via_ui_enabled`: Always `true` (only available when enabled)
 - `settings_migrated`: Always `true` after import
 - `configuration`: Updated configuration with masked sensitive fields
-- `env_differs`: Dictionary showing which settings differ between ENV and DB (helps identify which ENV vars to remove)
+- `env_locked_keys`: Array of setting keys where ENV is set and overrides DB values
 
 **Error Responses:**
 
@@ -2285,7 +2275,7 @@ Migrates all current effective settings (from defaults + ENV + existing DB) into
 - Imports all editable settings from current effective configuration
 - Settings are automatically reloaded after import
 - MailcowAPI configuration is automatically updated
-- `env_differs` helps identify which ENV variables should be removed
+- `env_locked_keys` shows which fields are controlled by ENV and cannot be overridden from the UI
 - After migration, settings are managed via UI and stored in database
 - `SETTINGS_EDIT_VIA_UI_ENABLED` must remain in ENV (not stored in DB)
 
