@@ -14,6 +14,7 @@ from typing import Optional
 from ..database import get_db
 from ..models import MessageCorrelation, PostfixLog, RspamdLog, NetfilterLog
 from ..config import settings
+from ..correlation import build_postscreen_summary
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,19 @@ def _group_postfix_by_recipient(postfix_logs) -> dict:
         )
 
     return grouped
+
+
+def _load_postscreen_summary_for_queue(db: Session, queue_id: Optional[str]):
+    if not queue_id:
+        return None
+
+    postfix_logs = (
+        db.query(PostfixLog)
+        .filter(PostfixLog.queue_id == queue_id)
+        .order_by(PostfixLog.time)
+        .all()
+    )
+    return build_postscreen_summary(postfix_logs)
 
 
 @router.get("/messages")
@@ -199,11 +213,21 @@ async def get_unified_messages(
 
         # Filter by IP (need to join with Rspamd if not already joined)
         if ip:
-            if not has_rspamd_join:
-                query = query.join(
-                    RspamdLog, MessageCorrelation.rspamd_log_id == RspamdLog.id
+            search_term = f"%{ip}%"
+            postscreen_queue_subquery = select(PostfixLog.queue_id).where(
+                and_(
+                    PostfixLog.queue_id.isnot(None),
+                    PostfixLog.message.ilike(f"%[{ip}]%"),
                 )
-            query = query.filter(RspamdLog.ip.ilike(f"%{ip}%"))
+            )
+            query = query.filter(
+                or_(
+                    MessageCorrelation.rspamd_log_id.in_(
+                        select(RspamdLog.id).where(RspamdLog.ip.ilike(search_term))
+                    ),
+                    MessageCorrelation.queue_id.in_(postscreen_queue_subquery),
+                )
+            )
 
         # Get total count (before blacklist filter)
         total_before_filter = query.count()
@@ -233,6 +257,12 @@ async def get_unified_messages(
                     .first()
                 )
 
+            postscreen_summary = None
+            if not rspamd_log and msg.queue_id:
+                postscreen_summary = _load_postscreen_summary_for_queue(
+                    db, msg.queue_id
+                )
+
             result_messages.append(
                 {
                     "correlation_key": msg.correlation_key,
@@ -249,7 +279,10 @@ async def get_unified_messages(
                     "spam_score": rspamd_log.score if rspamd_log else None,
                     "is_spam": rspamd_log.is_spam if rspamd_log else None,
                     "user": rspamd_log.user if rspamd_log else None,
-                    "ip": rspamd_log.ip if rspamd_log else None,
+                    "ip": rspamd_log.ip
+                    if rspamd_log
+                    else (postscreen_summary or {}).get("client_ip"),
+                    "is_postscreen_reject": bool(postscreen_summary),
                 }
             )
 
@@ -343,6 +376,8 @@ async def get_message_full_details(correlation_key: str, db: Session = Depends(g
                 .all()
             )  # Limit to 100 most recent to avoid too many results
 
+        postscreen_summary = build_postscreen_summary(postfix_logs)
+
         # Get all recipients - from Rspamd (primary source) or from Postfix logs
         recipients = []
         if rspamd_log and rspamd_log.recipients_smtp:
@@ -395,6 +430,8 @@ async def get_message_full_details(correlation_key: str, db: Session = Depends(g
             }
             if rspamd_log
             else None,
+            "is_postscreen_reject": bool(postscreen_summary),
+            "postscreen_summary": postscreen_summary,
             "postfix_by_recipient": _group_postfix_by_recipient(postfix_logs),
             "postfix": [
                 {
@@ -407,6 +444,9 @@ async def get_message_full_details(correlation_key: str, db: Session = Depends(g
                     "delay": log.delay,
                     "dsn": log.dsn,
                     "recipient": log.recipient,  # Add recipient to each log entry
+                    "sender": log.sender,
+                    "queue_id": log.queue_id,
+                    "message_id": log.message_id,
                 }
                 for log in postfix_logs
             ],
