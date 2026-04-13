@@ -9,11 +9,12 @@ Now that every message has a Message-ID, we can simplify:
 
 BLACKLIST filtering is done at import time (in scheduler.py)
 """
+
 import logging
 import re
 import hashlib
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 
@@ -22,29 +23,226 @@ from .config import settings
 
 logger = logging.getLogger(__name__)
 
+POSTSCREEN_SYNTHETIC_QUEUE_PREFIX = "PSR"
+POSTSCREEN_SYNTHETIC_MESSAGE_DOMAIN = "synthetic.local"
+POSTSCREEN_EVENT_TYPES_WITH_PORT = {"connect", "dnsbl_rank", "reject"}
+
+
+def _empty_postscreen_result(event_type: str) -> Dict[str, Any]:
+    return {
+        "event_type": event_type,
+        "client_ip": None,
+        "client_port": None,
+        "helo": None,
+        "sender": None,
+        "recipient": None,
+        "dnsbl_domain": None,
+        "dnsbl_result": None,
+        "dnsbl_rank": None,
+        "whitelist_result": None,
+        "rejecting_dnsbl": None,
+        "reject_reason": None,
+    }
+
+
+def parse_postscreen_message(
+    program: Optional[str], message: str
+) -> Optional[Dict[str, Any]]:
+    """Parse postscreen-related Postfix messages into structured metadata."""
+    if not program or not message:
+        return None
+
+    if program == "postfix/postscreen":
+        connect_match = re.match(
+            r"^CONNECT from \[(?P<client_ip>[^\]]+)\]:(?P<client_port>\d+) to \[[^\]]+\]:\d+$",
+            message,
+        )
+        if connect_match:
+            data = _empty_postscreen_result("connect")
+            data["client_ip"] = connect_match.group("client_ip")
+            data["client_port"] = int(connect_match.group("client_port"))
+            return data
+
+        rank_match = re.match(
+            r"^DNSBL rank (?P<dnsbl_rank>\d+) for \[(?P<client_ip>[^\]]+)\]:(?P<client_port>\d+)$",
+            message,
+        )
+        if rank_match:
+            data = _empty_postscreen_result("dnsbl_rank")
+            data["client_ip"] = rank_match.group("client_ip")
+            data["client_port"] = int(rank_match.group("client_port"))
+            data["dnsbl_rank"] = int(rank_match.group("dnsbl_rank"))
+            return data
+
+        reject_match = re.match(
+            r"^NOQUEUE: reject: RCPT from \[(?P<client_ip>[^\]]+)\]:(?P<client_port>\d+): "
+            r"(?P<reject_reason>.+?); from=<(?P<sender>[^>]*)>, to=<(?P<recipient>[^>]*)>, "
+            r"proto=[^,]+, helo=<(?P<helo>[^>]*)>$",
+            message,
+        )
+        if reject_match:
+            data = _empty_postscreen_result("reject")
+            data["client_ip"] = reject_match.group("client_ip")
+            data["client_port"] = int(reject_match.group("client_port"))
+            data["helo"] = reject_match.group("helo") or None
+            data["sender"] = reject_match.group("sender") or None
+            data["recipient"] = reject_match.group("recipient") or None
+            data["reject_reason"] = reject_match.group("reject_reason").strip()
+
+            rejecting_dnsbl_match = re.search(
+                r"blocked using\s+([^;\s]+)", data["reject_reason"] or ""
+            )
+            if rejecting_dnsbl_match:
+                data["rejecting_dnsbl"] = rejecting_dnsbl_match.group(1)
+
+            return data
+
+    if program == "postfix/dnsblog":
+        dnsblog_match = re.match(
+            r"^addr (?P<client_ip>\S+) listed by domain (?P<dnsbl_domain>\S+) as (?P<dnsbl_result>\S+)$",
+            message,
+        )
+        if dnsblog_match:
+            data = _empty_postscreen_result("dnsblog")
+            data["client_ip"] = dnsblog_match.group("client_ip")
+            data["dnsbl_domain"] = dnsblog_match.group("dnsbl_domain")
+            data["dnsbl_result"] = dnsblog_match.group("dnsbl_result")
+            return data
+
+    if program == "whitelist_forwardinghosts":
+        whitelist_match = re.match(
+            r"^Look up (?P<client_ip>\S+) on whitelist, result (?P<whitelist_result>.+)$",
+            message,
+        )
+        if whitelist_match:
+            data = _empty_postscreen_result("whitelist_lookup")
+            data["client_ip"] = whitelist_match.group("client_ip")
+            data["whitelist_result"] = whitelist_match.group("whitelist_result").strip()
+            return data
+
+    return None
+
+
+def get_postscreen_data(raw_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not raw_data or not isinstance(raw_data, dict):
+        return None
+    postscreen = raw_data.get("_postscreen")
+    return postscreen if isinstance(postscreen, dict) else None
+
+
+def get_postscreen_data_from_log(postfix_log: PostfixLog) -> Optional[Dict[str, Any]]:
+    return get_postscreen_data(postfix_log.raw_data)
+
+
+def is_postscreen_synthetic_queue_id(queue_id: Optional[str]) -> bool:
+    return bool(queue_id and queue_id.startswith(POSTSCREEN_SYNTHETIC_QUEUE_PREFIX))
+
+
+def generate_postscreen_synthetic_ids(
+    client_ip: str,
+    client_port: Optional[int],
+    session_start: datetime,
+) -> Tuple[str, str]:
+    if session_start.tzinfo is None:
+        session_start_utc = session_start.replace(tzinfo=timezone.utc)
+    else:
+        session_start_utc = session_start.astimezone(timezone.utc)
+
+    seed = f"{client_ip}:{client_port or 'none'}:{int(session_start_utc.timestamp())}"
+    digest = hashlib.sha256(seed.encode()).hexdigest()
+    queue_id = f"{POSTSCREEN_SYNTHETIC_QUEUE_PREFIX}{digest[:12].upper()}"
+    message_id = (
+        f"postscreen-reject.{digest[:24]}@{POSTSCREEN_SYNTHETIC_MESSAGE_DOMAIN}"
+    )
+    return queue_id, message_id
+
+
+def build_postscreen_summary(
+    postfix_logs: List[PostfixLog],
+) -> Optional[Dict[str, Any]]:
+    summary = {
+        "client_ip": None,
+        "client_port": None,
+        "helo": None,
+        "sender": None,
+        "recipients": [],
+        "dnsbl_rank": None,
+        "dnsbl_hits": [],
+        "rejecting_dnsbl": None,
+        "reject_reason": None,
+    }
+    seen_recipients = set()
+    seen_dnsbl_hits = set()
+    has_reject = False
+
+    for postfix_log in sorted(postfix_logs, key=lambda log: log.time or datetime.min):
+        postscreen = get_postscreen_data_from_log(postfix_log)
+        if not postscreen:
+            continue
+
+        event_type = postscreen.get("event_type")
+        if event_type == "reject":
+            has_reject = True
+
+        if not summary["client_ip"] and postscreen.get("client_ip"):
+            summary["client_ip"] = postscreen.get("client_ip")
+        if summary["client_port"] is None and postscreen.get("client_port") is not None:
+            summary["client_port"] = postscreen.get("client_port")
+        if not summary["helo"] and postscreen.get("helo"):
+            summary["helo"] = postscreen.get("helo")
+        if not summary["sender"] and postscreen.get("sender"):
+            summary["sender"] = postscreen.get("sender")
+        if postscreen.get("dnsbl_rank") is not None:
+            summary["dnsbl_rank"] = postscreen.get("dnsbl_rank")
+        if not summary["rejecting_dnsbl"] and postscreen.get("rejecting_dnsbl"):
+            summary["rejecting_dnsbl"] = postscreen.get("rejecting_dnsbl")
+        if not summary["reject_reason"] and postscreen.get("reject_reason"):
+            summary["reject_reason"] = postscreen.get("reject_reason")
+
+        recipient = postscreen.get("recipient") or postfix_log.recipient
+        if recipient and recipient not in seen_recipients:
+            seen_recipients.add(recipient)
+            summary["recipients"].append(recipient)
+
+        if event_type == "dnsblog" and postscreen.get("dnsbl_domain"):
+            hit_key = (
+                postscreen.get("dnsbl_domain"),
+                postscreen.get("dnsbl_result"),
+            )
+            if hit_key not in seen_dnsbl_hits:
+                seen_dnsbl_hits.add(hit_key)
+                summary["dnsbl_hits"].append(
+                    {
+                        "domain": postscreen.get("dnsbl_domain"),
+                        "result": postscreen.get("dnsbl_result"),
+                    }
+                )
+
+    return summary if has_reject else None
+
 
 def extract_domain(email: str) -> Optional[str]:
     """
     Extract domain from email address
-    
+
     Args:
         email: Email address (e.g., "user@example.com")
-    
+
     Returns:
         Domain name or None if invalid
     """
-    if not email or '@' not in email:
+    if not email or "@" not in email:
         return None
-    return email.split('@', 1)[1].lower().strip()
+    return email.split("@", 1)[1].lower().strip()
 
 
 def is_local_domain(domain: Optional[str]) -> bool:
     """
     Check if domain is in local domains list
-    
+
     Args:
         domain: Domain name to check
-    
+
     Returns:
         True if domain is local, False otherwise
     """
@@ -59,39 +257,39 @@ def is_local_domain(domain: Optional[str]) -> bool:
 def detect_direction(rspamd_log: Dict[str, Any]) -> str:
     """
     Detect if email is inbound or outbound based on Rspamd log
-    
+
     Note: Internal direction is determined later based on Postfix relay=dovecot
     Local domains list includes primary + alias domains (from API alias-domain/all).
-    
+
     Logic:
     1. Check for MAILCOW_AUTH symbol (definitive outbound indicator)
     2. Check user field (if authenticated = outbound, if unknown = inbound)
     3. Fallback: if inbound by above but sender is local (incl. alias domain) and
        any recipient is external → outbound
-    
+
     Args:
         rspamd_log: Rspamd log entry dictionary
-    
+
     Returns:
         'inbound', 'outbound', or 'unknown'
     """
     # Check for MAILCOW_AUTH symbol - most reliable indicator
-    symbols = rspamd_log.get('symbols', {})
-    if 'MAILCOW_AUTH' in symbols:
-        return 'outbound'
-    
+    symbols = rspamd_log.get("symbols", {})
+    if "MAILCOW_AUTH" in symbols:
+        return "outbound"
+
     # Check user field - if authenticated, it's outbound
-    user = rspamd_log.get('user', 'unknown')
-    if user != 'unknown' and user:
-        return 'outbound'
-    
+    user = rspamd_log.get("user", "unknown")
+    if user != "unknown" and user:
+        return "outbound"
+
     # If user is unknown, default to inbound
-    direction = 'inbound' if user == 'unknown' else 'unknown'
-    
+    direction = "inbound" if user == "unknown" else "unknown"
+
     # Fallback: sender from alias domain may not have MAILCOW_AUTH/user set
-    if direction == 'inbound':
-        sender = rspamd_log.get('sender_smtp')
-        recipients = rspamd_log.get('rcpt_smtp', [])
+    if direction == "inbound":
+        sender = rspamd_log.get("sender_smtp")
+        recipients = rspamd_log.get("rcpt_smtp", [])
         if isinstance(recipients, str):
             recipients = [recipients] if recipients else []
         sender_domain = extract_domain(sender) if sender else None
@@ -99,263 +297,291 @@ def detect_direction(rspamd_log: Dict[str, Any]) -> str:
             for r in recipients:
                 recv_domain = extract_domain(r) if r else None
                 if recv_domain and not is_local_domain(recv_domain):
-                    return 'outbound'
+                    return "outbound"
     return direction
 
 
 def is_blacklisted(email: str) -> bool:
     """
     Check if an email address is in the blacklist
-    
+
     Args:
         email: Email address to check
-    
+
     Returns:
         True if blacklisted, False otherwise
     """
     if not email:
         return False
-    
+
     email_lower = email.lower().strip()
     blacklist = settings.blacklist_emails_list
-    
+
     return email_lower in blacklist
 
 
-def parse_postfix_message(message: str) -> Dict[str, Any]:
+def parse_postfix_message(
+    message: str, program: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Parse Postfix log message to extract structured data
-    
+
     Args:
         message: Postfix log message string
-    
+
     Returns:
         Dictionary with parsed fields
     """
     result = {}
-    
+
+    postscreen = parse_postscreen_message(program, message)
+    if postscreen:
+        result["postscreen"] = postscreen
+
     # Extract queue ID (at the start of message)
-    queue_match = re.match(r'^([A-F0-9]+):', message)
+    queue_match = re.match(r"^([A-F0-9]+):", message)
     if queue_match:
-        result['queue_id'] = queue_match.group(1)
-    
+        result["queue_id"] = queue_match.group(1)
+
     # Extract message-id - Method 1: Standalone line
-    mid_match = re.search(r'message-id=<([^>]+)>', message, re.IGNORECASE)
+    mid_match = re.search(r"message-id=<([^>]+)>", message, re.IGNORECASE)
     if mid_match:
-        result['message_id'] = mid_match.group(1)
-    
+        result["message_id"] = mid_match.group(1)
+
     # Extract message-id - Method 2: Inside status message (alternative location)
     # Example: status=sent (250 2.6.0 <message-id@domain.com> ...)
-    if not result.get('message_id'):
-        status_mid_match = re.search(r'status=\w+\s*\([^<]*<([^>@]+@[^>]+)>', message)
+    if not result.get("message_id"):
+        status_mid_match = re.search(r"status=\w+\s*\([^<]*<([^>@]+@[^>]+)>", message)
         if status_mid_match:
             # Verify it looks like a message-id (has @ symbol)
             potential_mid = status_mid_match.group(1)
             # Additional check: message-ids often have special chars, not just email format
-            if '@' in potential_mid:
-                result['message_id'] = potential_mid
-    
+            if "@" in potential_mid:
+                result["message_id"] = potential_mid
+
     # Extract from= (sender)
-    from_match = re.search(r'from=<([^>]*)>', message)
+    from_match = re.search(r"from=<([^>]*)>", message)
     if from_match:
-        result['sender'] = from_match.group(1) if from_match.group(1) else None
-    
+        result["sender"] = from_match.group(1) if from_match.group(1) else None
+
     # Extract to= (recipient)
-    to_match = re.search(r'to=<([^>]*)>', message)
+    to_match = re.search(r"to=<([^>]*)>", message)
     if to_match:
-        result['recipient'] = to_match.group(1) if to_match.group(1) else None
-    
+        result["recipient"] = to_match.group(1) if to_match.group(1) else None
+
     # Extract relay
-    relay_match = re.search(r'relay=([^,\s]+)', message)
+    relay_match = re.search(r"relay=([^,\s]+)", message)
     if relay_match:
-        result['relay'] = relay_match.group(1)
-    
+        result["relay"] = relay_match.group(1)
+
     # Extract delay
-    delay_match = re.search(r'delay=([\d.]+)', message)
+    delay_match = re.search(r"delay=([\d.]+)", message)
     if delay_match:
-        result['delay'] = float(delay_match.group(1))
-    
+        result["delay"] = float(delay_match.group(1))
+
     # Extract DSN
-    dsn_match = re.search(r'dsn=([\d.]+)', message)
+    dsn_match = re.search(r"dsn=([\d.]+)", message)
     if dsn_match:
-        result['dsn'] = dsn_match.group(1)
-    
+        result["dsn"] = dsn_match.group(1)
+
     # Extract orig_to (original recipient)
-    orig_to_match = re.search(r'orig_to=<([^>]*)>', message)
+    orig_to_match = re.search(r"orig_to=<([^>]*)>", message)
     if orig_to_match:
-        result['orig_to'] = orig_to_match.group(1) if orig_to_match.group(1) else None
-    
+        result["orig_to"] = orig_to_match.group(1) if orig_to_match.group(1) else None
+
     # Extract status
-    status_match = re.search(r'status=(\w+)', message)
+    status_match = re.search(r"status=(\w+)", message)
     if status_match:
-        result['status'] = status_match.group(1)
-        
+        result["status"] = status_match.group(1)
+
         # Check for rspamd-pipe-spam delivery
         # Example: status=sent (delivered to command: /usr/local/bin/rspamd-pipe-spam)
-        if result['status'] == 'sent' and 'rspamd-pipe-spam' in message:
-            result['status'] = 'spam'
+        if result["status"] == "sent" and "rspamd-pipe-spam" in message:
+            result["status"] = "spam"
             # If we have orig_to, use it as the recipient because the actual to= is the spam alias
-            if result.get('orig_to'):
-                result['recipient'] = result['orig_to']
-    
+            if result.get("orig_to"):
+                result["recipient"] = result["orig_to"]
+
+    if postscreen and postscreen.get("event_type") == "reject":
+        result["status"] = "rejected"
+        if postscreen.get("sender"):
+            result["sender"] = postscreen.get("sender")
+        if postscreen.get("recipient"):
+            result["recipient"] = postscreen.get("recipient")
+
     return result
 
 
-def correlate_rspamd_log(db: Session, rspamd_log: RspamdLog) -> Optional[MessageCorrelation]:
+def correlate_rspamd_log(
+    db: Session, rspamd_log: RspamdLog
+) -> Optional[MessageCorrelation]:
     """
     Correlate Rspamd log with Postfix logs using Message-ID
-    
+
     NEW SIMPLIFIED LOGIC:
     1. Get Message-ID from Rspamd
     2. Find Postfix log(s) with same Message-ID
     3. Get Queue-ID from Postfix
     4. Find ALL Postfix logs with that Queue-ID
     5. Create/update correlation linking everything
-    
+
     Args:
         db: Database session
         rspamd_log: RspamdLog object
-    
+
     Returns:
         MessageCorrelation object or None
     """
     # Skip if no message_id
-    if not rspamd_log.message_id or rspamd_log.message_id == 'undef':
+    if not rspamd_log.message_id or rspamd_log.message_id == "undef":
         logger.debug("Rspamd log has no message_id, skipping correlation")
         return None
-    
+
     message_id = rspamd_log.message_id.strip()
-    
+
     # Step 1: Find Postfix log(s) with this Message-ID
-    postfix_logs_with_msgid = db.query(PostfixLog).filter(
-        PostfixLog.message_id == message_id
-    ).all()
-    
+    postfix_logs_with_msgid = (
+        db.query(PostfixLog).filter(PostfixLog.message_id == message_id).all()
+    )
+
     if not postfix_logs_with_msgid:
         logger.debug(f"No Postfix logs found with Message-ID: {message_id[:50]}")
         # Create correlation without Postfix data (message not yet delivered)
         return create_correlation_from_rspamd(db, rspamd_log)
-    
+
     # Step 2: Get Queue-ID from Postfix logs
     queue_id = None
     for plog in postfix_logs_with_msgid:
         if plog.queue_id:
             queue_id = plog.queue_id
             break
-    
+
     if not queue_id:
-        logger.warning(f"Postfix logs found but no Queue-ID for Message-ID: {message_id[:50]}")
+        logger.warning(
+            f"Postfix logs found but no Queue-ID for Message-ID: {message_id[:50]}"
+        )
         return create_correlation_from_rspamd(db, rspamd_log)
-    
+
     logger.debug(f"Found Queue-ID {queue_id} for Message-ID {message_id[:50]}")
-    
+
     # Step 3: Find ALL Postfix logs with this Queue-ID
-    all_postfix_logs = db.query(PostfixLog).filter(
-        PostfixLog.queue_id == queue_id
-    ).all()
-    
+    all_postfix_logs = (
+        db.query(PostfixLog).filter(PostfixLog.queue_id == queue_id).all()
+    )
+
     logger.debug(f"Found {len(all_postfix_logs)} Postfix logs with Queue-ID {queue_id}")
-    
+
     # Step 4: Check if correlation already exists
-    existing_correlation = db.query(MessageCorrelation).filter(
-        MessageCorrelation.message_id == message_id
-    ).first()
-    
+    existing_correlation = (
+        db.query(MessageCorrelation)
+        .filter(MessageCorrelation.message_id == message_id)
+        .first()
+    )
+
     if existing_correlation:
         # Update existing correlation
         logger.debug(f"Updating existing correlation for Message-ID {message_id[:50]}")
         update_correlation_with_rspamd(db, existing_correlation, rspamd_log)
         update_correlation_with_postfix_logs(db, existing_correlation, all_postfix_logs)
         return existing_correlation
-    
+
     # Step 5: Create new correlation
-    logger.info(f"Creating new correlation for Message-ID {message_id[:50]} (Queue-ID: {queue_id})")
-    correlation = create_correlation_with_all_data(
-        db, 
-        rspamd_log, 
-        all_postfix_logs, 
-        message_id, 
-        queue_id
+    logger.info(
+        f"Creating new correlation for Message-ID {message_id[:50]} (Queue-ID: {queue_id})"
     )
-    
+    correlation = create_correlation_with_all_data(
+        db, rspamd_log, all_postfix_logs, message_id, queue_id
+    )
+
     # Update all Postfix logs with correlation key
     for plog in all_postfix_logs:
         plog.correlation_key = correlation.correlation_key
-    
+
     db.commit()
     return correlation
 
 
-def correlate_postfix_log(db: Session, postfix_log: PostfixLog) -> Optional[MessageCorrelation]:
+def correlate_postfix_log(
+    db: Session, postfix_log: PostfixLog
+) -> Optional[MessageCorrelation]:
     """
     Correlate Postfix log with existing correlation (if exists)
-    
+
     NEW SIMPLIFIED LOGIC:
     1. If Postfix has Message-ID => find correlation by Message-ID
     2. If Postfix has Queue-ID => find correlation by Queue-ID
     3. Update correlation with this Postfix log
-    
+
     Args:
         db: Database session
         postfix_log: PostfixLog object
-    
+
     Returns:
         MessageCorrelation object or None
     """
     correlation = None
-    
+
     # Method 1: Find by Message-ID (most reliable)
     if postfix_log.message_id:
-        correlation = db.query(MessageCorrelation).filter(
-            MessageCorrelation.message_id == postfix_log.message_id
-        ).first()
-        
+        correlation = (
+            db.query(MessageCorrelation)
+            .filter(MessageCorrelation.message_id == postfix_log.message_id)
+            .first()
+        )
+
         if correlation:
-            logger.debug(f"Found correlation by Message-ID: {postfix_log.message_id[:50]}")
-    
+            logger.debug(
+                f"Found correlation by Message-ID: {postfix_log.message_id[:50]}"
+            )
+
     # Method 2: Find by Queue-ID (fallback)
     if not correlation and postfix_log.queue_id:
-        correlation = db.query(MessageCorrelation).filter(
-            MessageCorrelation.queue_id == postfix_log.queue_id
-        ).first()
-        
+        correlation = (
+            db.query(MessageCorrelation)
+            .filter(MessageCorrelation.queue_id == postfix_log.queue_id)
+            .first()
+        )
+
         if correlation:
             logger.debug(f"Found correlation by Queue-ID: {postfix_log.queue_id}")
-    
+
     # Update correlation if found
     if correlation:
         update_correlation_with_postfix_log(db, correlation, postfix_log)
         postfix_log.correlation_key = correlation.correlation_key
         db.commit()
         return correlation
-    
+
     # No correlation found yet (Rspamd may not have been processed)
-    logger.debug(f"No correlation found for Postfix log (Queue-ID: {postfix_log.queue_id}, Message-ID: {postfix_log.message_id})")
+    logger.debug(
+        f"No correlation found for Postfix log (Queue-ID: {postfix_log.queue_id}, Message-ID: {postfix_log.message_id})"
+    )
     return None
 
 
 def create_correlation_from_rspamd(
-    db: Session, 
-    rspamd_log: RspamdLog
+    db: Session, rspamd_log: RspamdLog
 ) -> MessageCorrelation:
     """
     Create a new correlation from Rspamd log only
     (used when Postfix logs are not yet available)
-    
+
     Args:
         db: Database session
         rspamd_log: RspamdLog object
-    
+
     Returns:
         MessageCorrelation object (marked as incomplete)
     """
     # Generate correlation key from message_id
-    correlation_key = hashlib.sha256(f"msgid:{rspamd_log.message_id}".encode()).hexdigest()
-    
+    correlation_key = hashlib.sha256(
+        f"msgid:{rspamd_log.message_id}".encode()
+    ).hexdigest()
+
     # Get first recipient
     recipients = rspamd_log.recipients_smtp if rspamd_log.recipients_smtp else []
     first_recipient = recipients[0] if recipients else None
-    
+
     correlation = MessageCorrelation(
         correlation_key=correlation_key,
         message_id=rspamd_log.message_id,
@@ -367,19 +593,21 @@ def create_correlation_from_rspamd(
         rspamd_log_id=rspamd_log.id,
         first_seen=rspamd_log.time,
         last_seen=datetime.utcnow(),
-        is_complete=False  # Incomplete - waiting for Postfix logs
+        is_complete=False,  # Incomplete - waiting for Postfix logs
     )
-    
+
     # Set initial status based on Rspamd action
-    if rspamd_log.action == 'reject':
-        correlation.final_status = 'rejected'
+    if rspamd_log.action == "reject":
+        correlation.final_status = "rejected"
     elif rspamd_log.is_spam:
-        correlation.final_status = 'spam'
-    
+        correlation.final_status = "spam"
+
     db.add(correlation)
     db.commit()
-    
-    logger.debug(f"Created incomplete correlation from Rspamd (waiting for Postfix): {correlation_key[:16]}")
+
+    logger.debug(
+        f"Created incomplete correlation from Rspamd (waiting for Postfix): {correlation_key[:16]}"
+    )
     return correlation
 
 
@@ -388,68 +616,67 @@ def create_correlation_with_all_data(
     rspamd_log: RspamdLog,
     postfix_logs: List[PostfixLog],
     message_id: str,
-    queue_id: str
+    queue_id: str,
 ) -> MessageCorrelation:
     """
     Create a new correlation with all available data
-    
+
     Args:
         db: Database session
         rspamd_log: RspamdLog object
         postfix_logs: List of PostfixLog objects
         message_id: Email Message-ID
         queue_id: Postfix Queue-ID
-    
+
     Returns:
         MessageCorrelation object
     """
     # Generate correlation key from message_id
     correlation_key = hashlib.sha256(f"msgid:{message_id}".encode()).hexdigest()
-    
+
     # Get first recipient from Rspamd
     recipients = rspamd_log.recipients_smtp if rspamd_log.recipients_smtp else []
     first_recipient = recipients[0] if recipients else None
-    
+
     # Get postfix log IDs
     postfix_log_ids = [log.id for log in postfix_logs if log.id]
-    
+
     # Determine final status from Postfix logs
     final_status = None
     for plog in postfix_logs:
         if plog.status:
-            if plog.status in ['bounced', 'rejected']:
+            if plog.status in ["bounced", "rejected"]:
                 final_status = plog.status
                 break  # Priority status found
-            elif plog.status == 'deferred' and not final_status:
+            elif plog.status == "deferred" and not final_status:
                 final_status = plog.status
-            elif plog.status == 'sent' and not final_status:
-                final_status = 'delivered'
-            elif plog.status == 'spam':
-                final_status = 'spam'
+            elif plog.status == "sent" and not final_status:
+                final_status = "delivered"
+            elif plog.status == "spam":
+                final_status = "spam"
                 # Mark Rspamd log as spam as well (so frontend shows SPAM badge)
                 if rspamd_log:
                     rspamd_log.is_spam = True
 
-    
     # If no status from Postfix, use Rspamd
     if not final_status:
-        if rspamd_log.action == 'reject':
-            final_status = 'rejected'
+        if rspamd_log.action == "reject":
+            final_status = "rejected"
         elif rspamd_log.is_spam:
-            final_status = 'spam'
-    
+            final_status = "spam"
+
     # Get earliest timestamp
     all_times = [rspamd_log.time] + [log.time for log in postfix_logs]
     first_seen = min(all_times)
-    
+
     # Check if email was delivered locally (relay=dovecot + both sender and recipient are local domains)
     # This is the definitive way to determine if email is internal
     direction = rspamd_log.direction
-    
+
     # Check if sender and recipient are both local domains
     sender_domain = extract_domain(rspamd_log.sender_smtp)
     recipients = rspamd_log.recipients_smtp if rspamd_log.recipients_smtp else []
-    
+
     sender_is_local = sender_domain and is_local_domain(sender_domain)
     all_recipients_local = True
     if recipients:
@@ -460,16 +687,16 @@ def create_correlation_with_all_data(
                 break
     else:
         all_recipients_local = False
-    
+
     # Only mark as internal if: relay=dovecot AND sender is local AND all recipients are local
     if sender_is_local and all_recipients_local:
         for plog in postfix_logs:
-            if plog.relay and 'dovecot' in plog.relay.lower():
-                direction = 'internal'
+            if plog.relay and "dovecot" in plog.relay.lower():
+                direction = "internal"
                 # Also update Rspamd log
-                rspamd_log.direction = 'internal'
+                rspamd_log.direction = "internal"
                 break
-    
+
     correlation = MessageCorrelation(
         correlation_key=correlation_key,
         message_id=message_id,
@@ -483,67 +710,65 @@ def create_correlation_with_all_data(
         postfix_log_ids=postfix_log_ids,
         first_seen=first_seen,
         last_seen=datetime.utcnow(),
-        is_complete=True  # Has Queue-ID and Postfix logs
+        is_complete=True,  # Has Queue-ID and Postfix logs
     )
-    
+
     db.add(correlation)
     db.commit()
-    
-    logger.info(f"Created full correlation: {correlation_key[:16]} (Queue: {queue_id}, {len(postfix_logs)} Postfix logs)")
+
+    logger.info(
+        f"Created full correlation: {correlation_key[:16]} (Queue: {queue_id}, {len(postfix_logs)} Postfix logs)"
+    )
     return correlation
 
 
 def update_correlation_with_rspamd(
-    db: Session,
-    correlation: MessageCorrelation,
-    rspamd_log: RspamdLog
+    db: Session, correlation: MessageCorrelation, rspamd_log: RspamdLog
 ):
     """
     Update correlation with Rspamd log information
-    
+
     Args:
         db: Database session
         correlation: MessageCorrelation object
         rspamd_log: RspamdLog object
     """
     correlation.rspamd_log_id = rspamd_log.id
-    
+
     if not correlation.sender and rspamd_log.sender_smtp:
         correlation.sender = rspamd_log.sender_smtp
-    
+
     if not correlation.recipient and rspamd_log.recipients_smtp:
         recipients = rspamd_log.recipients_smtp
         if recipients and isinstance(recipients, list):
             correlation.recipient = recipients[0]
-    
+
     if not correlation.subject and rspamd_log.subject:
         correlation.subject = rspamd_log.subject
-    
+
     if not correlation.direction:
         correlation.direction = rspamd_log.direction
-    
+
     # Update status if Rspamd has stronger verdict
-    if rspamd_log.action == 'reject':
-        correlation.final_status = 'rejected'
+    if rspamd_log.action == "reject":
+        correlation.final_status = "rejected"
     elif rspamd_log.is_spam and not correlation.final_status:
-        correlation.final_status = 'spam'
-    
+        correlation.final_status = "spam"
+
     correlation.last_seen = datetime.utcnow()
     db.commit()
 
 
 def update_correlation_with_postfix_log(
-    db: Session,
-    correlation: MessageCorrelation,
-    postfix_log: PostfixLog
+    db: Session, correlation: MessageCorrelation, postfix_log: PostfixLog
 ):
     """
     Update correlation with a single Postfix log
-    
+
     IMPORTANT: When we get a queue_id for the first time, we must also
     find and link ALL existing PostfixLogs with that queue_id!
     This handles the case where logs arrive out of order.
-    
+
     Args:
         db: Database session
         correlation: MessageCorrelation object
@@ -551,129 +776,145 @@ def update_correlation_with_postfix_log(
     """
     # Check if this is the first time we're getting a queue_id
     first_queue_id = not correlation.queue_id and postfix_log.queue_id
-    
+
     # Add to postfix log IDs list
     current_ids = list(correlation.postfix_log_ids or [])
     if postfix_log.id and postfix_log.id not in current_ids:
         current_ids.append(postfix_log.id)
         correlation.postfix_log_ids = current_ids
-    
+
     # Update basic info if not set
     if not correlation.sender and postfix_log.sender:
         correlation.sender = postfix_log.sender
-    
+
     if not correlation.recipient and postfix_log.recipient:
         correlation.recipient = postfix_log.recipient
-    
+
     if not correlation.queue_id and postfix_log.queue_id:
         correlation.queue_id = postfix_log.queue_id
-    
+
     if not correlation.message_id and postfix_log.message_id:
         correlation.message_id = postfix_log.message_id
-    
+
     # CRITICAL FIX: If we just got a queue_id, find ALL existing postfix logs
     # with this queue_id and link them to this correlation
     if first_queue_id and postfix_log.queue_id:
-        logger.info(f"First queue_id {postfix_log.queue_id} for correlation - searching for related logs")
-        
+        logger.info(
+            f"First queue_id {postfix_log.queue_id} for correlation - searching for related logs"
+        )
+
         # Find all PostfixLogs with this queue_id that aren't already linked
-        related_logs = db.query(PostfixLog).filter(
-            PostfixLog.queue_id == postfix_log.queue_id,
-            PostfixLog.id != postfix_log.id  # Exclude current log
-        ).all()
-        
+        related_logs = (
+            db.query(PostfixLog)
+            .filter(
+                PostfixLog.queue_id == postfix_log.queue_id,
+                PostfixLog.id != postfix_log.id,  # Exclude current log
+            )
+            .all()
+        )
+
         if related_logs:
-            logger.info(f"Found {len(related_logs)} additional postfix logs with queue_id {postfix_log.queue_id}")
-            
+            logger.info(
+                f"Found {len(related_logs)} additional postfix logs with queue_id {postfix_log.queue_id}"
+            )
+
             for related_log in related_logs:
                 # Add to IDs list
                 if related_log.id and related_log.id not in current_ids:
                     current_ids.append(related_log.id)
-                
+
                 # Update correlation key in the related log
                 related_log.correlation_key = correlation.correlation_key
-                
+
                 # Extract info from related logs
                 if not correlation.sender and related_log.sender:
                     correlation.sender = related_log.sender
                 if not correlation.recipient and related_log.recipient:
                     correlation.recipient = related_log.recipient
-                
+
                 # Update status from related logs
                 if related_log.status:
-                    if related_log.status in ['bounced', 'rejected']:
+                    if related_log.status in ["bounced", "rejected"]:
                         correlation.final_status = related_log.status
-                    elif related_log.status == 'deferred' and correlation.final_status not in ['bounced', 'rejected']:
+                    elif (
+                        related_log.status == "deferred"
+                        and correlation.final_status not in ["bounced", "rejected"]
+                    ):
                         correlation.final_status = related_log.status
-                    elif related_log.status == 'sent' and not correlation.final_status:
-                        correlation.final_status = 'delivered'
-                    elif related_log.status == 'spam':
+                    elif related_log.status == "sent" and not correlation.final_status:
+                        correlation.final_status = "delivered"
+                    elif related_log.status == "spam":
                         # Priority: bounced > rejected > spam > delivered
-                        if correlation.final_status not in ['bounced', 'rejected']:
-                            correlation.final_status = 'spam'
+                        if correlation.final_status not in ["bounced", "rejected"]:
+                            correlation.final_status = "spam"
 
-            
             correlation.postfix_log_ids = current_ids
-    
+
     # Check if email was delivered locally (relay=dovecot + both sender and recipient are local domains)
     # This is the definitive way to determine if email is internal
-    if postfix_log.relay and 'dovecot' in postfix_log.relay.lower():
+    if postfix_log.relay and "dovecot" in postfix_log.relay.lower():
         # Check if sender and recipient are both local domains
         sender_domain = extract_domain(correlation.sender or postfix_log.sender)
-        recipient_domain = extract_domain(correlation.recipient or postfix_log.recipient)
-        
+        recipient_domain = extract_domain(
+            correlation.recipient or postfix_log.recipient
+        )
+
         sender_is_local = sender_domain and is_local_domain(sender_domain)
         recipient_is_local = recipient_domain and is_local_domain(recipient_domain)
-        
+
         # Only mark as internal if both sender and recipient are local domains
         if sender_is_local and recipient_is_local:
-            correlation.direction = 'internal'
+            correlation.direction = "internal"
             # Also update Rspamd log if it exists
             if correlation.rspamd_log_id:
-                rspamd_log = db.query(RspamdLog).filter(
-                    RspamdLog.id == correlation.rspamd_log_id
-                ).first()
+                rspamd_log = (
+                    db.query(RspamdLog)
+                    .filter(RspamdLog.id == correlation.rspamd_log_id)
+                    .first()
+                )
                 if rspamd_log:
-                    rspamd_log.direction = 'internal'
-    
+                    rspamd_log.direction = "internal"
+
     # Update final status based on current Postfix log status
     # Priority: bounced > rejected > deferred > sent
     if postfix_log.status:
-        if postfix_log.status in ['bounced', 'rejected']:
+        if postfix_log.status in ["bounced", "rejected"]:
             correlation.final_status = postfix_log.status
-        elif postfix_log.status == 'deferred' and correlation.final_status not in ['bounced', 'rejected']:
+        elif postfix_log.status == "deferred" and correlation.final_status not in [
+            "bounced",
+            "rejected",
+        ]:
             correlation.final_status = postfix_log.status
-        elif postfix_log.status == 'sent' and not correlation.final_status:
-            correlation.final_status = 'delivered'
-        elif postfix_log.status == 'spam':
+        elif postfix_log.status == "sent" and not correlation.final_status:
+            correlation.final_status = "delivered"
+        elif postfix_log.status == "spam":
             # Priority: bounced > rejected > spam > delivered
-            if correlation.final_status not in ['bounced', 'rejected']:
-                correlation.final_status = 'spam'
+            if correlation.final_status not in ["bounced", "rejected"]:
+                correlation.final_status = "spam"
                 # Mark Rspamd log as spam as well
                 if correlation.rspamd_log_id:
-                    rspamd_log = db.query(RspamdLog).filter(
-                        RspamdLog.id == correlation.rspamd_log_id
-                    ).first()
+                    rspamd_log = (
+                        db.query(RspamdLog)
+                        .filter(RspamdLog.id == correlation.rspamd_log_id)
+                        .first()
+                    )
                     if rspamd_log:
                         rspamd_log.is_spam = True
 
-    
     # Mark as complete if we now have Queue-ID and Postfix logs
     if correlation.queue_id and correlation.postfix_log_ids:
         correlation.is_complete = True
-    
+
     correlation.last_seen = datetime.utcnow()
     db.commit()
 
 
 def update_correlation_with_postfix_logs(
-    db: Session,
-    correlation: MessageCorrelation,
-    postfix_logs: List[PostfixLog]
+    db: Session, correlation: MessageCorrelation, postfix_logs: List[PostfixLog]
 ):
     """
     Update correlation with multiple Postfix logs
-    
+
     Args:
         db: Database session
         correlation: MessageCorrelation object
@@ -684,85 +925,88 @@ def update_correlation_with_postfix_logs(
     for plog in postfix_logs:
         if plog.id and plog.id not in current_ids:
             current_ids.append(plog.id)
-    
+
     correlation.postfix_log_ids = current_ids
-    
+
     # Update fields from logs
     for plog in postfix_logs:
         if not correlation.sender and plog.sender:
             correlation.sender = plog.sender
-        
+
         if not correlation.recipient and plog.recipient:
             correlation.recipient = plog.recipient
-        
+
         if not correlation.queue_id and plog.queue_id:
             correlation.queue_id = plog.queue_id
-        
+
         if not correlation.message_id and plog.message_id:
             correlation.message_id = plog.message_id
-        
+
         # Update correlation key in Postfix log
         plog.correlation_key = correlation.correlation_key
-    
+
     # Check if email was delivered locally (relay=dovecot + both sender and recipient are local domains)
     # This is the definitive way to determine if email is internal
     is_internal = False
-    
+
     # Check if sender and recipient are both local domains
     sender_domain = extract_domain(correlation.sender)
     recipient_domain = extract_domain(correlation.recipient)
-    
+
     sender_is_local = sender_domain and is_local_domain(sender_domain)
     recipient_is_local = recipient_domain and is_local_domain(recipient_domain)
-    
+
     # Only mark as internal if: relay=dovecot AND sender is local AND recipient is local
     if sender_is_local and recipient_is_local:
         for plog in postfix_logs:
-            if plog.relay and 'dovecot' in plog.relay.lower():
+            if plog.relay and "dovecot" in plog.relay.lower():
                 is_internal = True
                 break
-    
+
     # Update direction to internal if all conditions met
     if is_internal:
-        correlation.direction = 'internal'
+        correlation.direction = "internal"
         # Also update Rspamd log if it exists
         if correlation.rspamd_log_id:
-            rspamd_log = db.query(RspamdLog).filter(
-                RspamdLog.id == correlation.rspamd_log_id
-            ).first()
+            rspamd_log = (
+                db.query(RspamdLog)
+                .filter(RspamdLog.id == correlation.rspamd_log_id)
+                .first()
+            )
             if rspamd_log:
-                rspamd_log.direction = 'internal'
-    
+                rspamd_log.direction = "internal"
+
     # Determine final status from all logs
     final_status = None
     for plog in postfix_logs:
         if plog.status:
-            if plog.status in ['bounced', 'rejected']:
+            if plog.status in ["bounced", "rejected"]:
                 final_status = plog.status
                 break
-            elif plog.status == 'deferred' and not final_status:
+            elif plog.status == "deferred" and not final_status:
                 final_status = plog.status
-            elif plog.status == 'sent' and not final_status:
-                final_status = 'delivered'
-            elif plog.status == 'spam':
-                 if final_status not in ['bounced', 'rejected']:
-                    final_status = 'spam'
+            elif plog.status == "sent" and not final_status:
+                final_status = "delivered"
+            elif plog.status == "spam":
+                if final_status not in ["bounced", "rejected"]:
+                    final_status = "spam"
                     # Mark Rspamd log as spam as well
                     if correlation.rspamd_log_id:
-                        rspamd_log = db.query(RspamdLog).filter(
-                            RspamdLog.id == correlation.rspamd_log_id
-                        ).first()
+                        rspamd_log = (
+                            db.query(RspamdLog)
+                            .filter(RspamdLog.id == correlation.rspamd_log_id)
+                            .first()
+                        )
                         if rspamd_log:
                             rspamd_log.is_spam = True
 
-    
     if final_status:
         correlation.final_status = final_status
-    
+
     # Mark as complete if we have Queue-ID and Postfix logs
     if correlation.queue_id and correlation.postfix_log_ids:
         correlation.is_complete = True
-    
+
     correlation.last_seen = datetime.utcnow()
     db.commit()
 
@@ -770,90 +1014,109 @@ def update_correlation_with_postfix_logs(
 def complete_incomplete_correlations(db: Session) -> int:
     """
     Background job to complete correlations that don't have Postfix logs yet
-    
+
     This handles the timing issue where Rspamd logs arrive before Postfix logs:
     1. Find correlations with Message-ID but no Queue-ID (incomplete)
     2. Search for Postfix logs with matching Message-ID
     3. If found, get Queue-ID and find all related Postfix logs
     4. Update correlation and mark as complete
-    
+
     Returns:
         Number of correlations completed
     """
     logger.info("Starting background job to complete incomplete correlations...")
-    
+
     try:
         # Find incomplete correlations (have Message-ID but missing Queue-ID or no Postfix logs)
-        incomplete_correlations = db.query(MessageCorrelation).filter(
-            MessageCorrelation.is_complete == False,
-            MessageCorrelation.message_id.isnot(None),
-            MessageCorrelation.message_id != ''
-        ).limit(100).all()  # Process 100 at a time to avoid overload
-        
+        incomplete_correlations = (
+            db.query(MessageCorrelation)
+            .filter(
+                MessageCorrelation.is_complete == False,
+                MessageCorrelation.message_id.isnot(None),
+                MessageCorrelation.message_id != "",
+            )
+            .limit(100)
+            .all()
+        )  # Process 100 at a time to avoid overload
+
         if not incomplete_correlations:
             logger.debug("No incomplete correlations found")
             return 0
-        
-        logger.info(f"Found {len(incomplete_correlations)} incomplete correlations to process")
-        
+
+        logger.info(
+            f"Found {len(incomplete_correlations)} incomplete correlations to process"
+        )
+
         completed_count = 0
-        
+
         for correlation in incomplete_correlations:
             try:
                 message_id = correlation.message_id
-                
+
                 # Find Postfix logs with this Message-ID
-                postfix_logs_with_msgid = db.query(PostfixLog).filter(
-                    PostfixLog.message_id == message_id
-                ).all()
-                
+                postfix_logs_with_msgid = (
+                    db.query(PostfixLog)
+                    .filter(PostfixLog.message_id == message_id)
+                    .all()
+                )
+
                 if not postfix_logs_with_msgid:
-                    logger.debug(f"No Postfix logs yet for Message-ID: {message_id[:50]}")
+                    logger.debug(
+                        f"No Postfix logs yet for Message-ID: {message_id[:50]}"
+                    )
                     continue
-                
+
                 # Get Queue-ID from Postfix logs
                 queue_id = None
                 for plog in postfix_logs_with_msgid:
                     if plog.queue_id:
                         queue_id = plog.queue_id
                         break
-                
+
                 if not queue_id:
-                    logger.debug(f"Postfix logs found but no Queue-ID for Message-ID: {message_id[:50]}")
+                    logger.debug(
+                        f"Postfix logs found but no Queue-ID for Message-ID: {message_id[:50]}"
+                    )
                     continue
-                
-                logger.info(f"Completing correlation: Message-ID {message_id[:50]} => Queue-ID {queue_id}")
-                
+
+                logger.info(
+                    f"Completing correlation: Message-ID {message_id[:50]} => Queue-ID {queue_id}"
+                )
+
                 # Find ALL Postfix logs with this Queue-ID
-                all_postfix_logs = db.query(PostfixLog).filter(
-                    PostfixLog.queue_id == queue_id
-                ).all()
-                
+                all_postfix_logs = (
+                    db.query(PostfixLog).filter(PostfixLog.queue_id == queue_id).all()
+                )
+
                 # Update correlation with all Postfix data
                 update_correlation_with_postfix_logs(db, correlation, all_postfix_logs)
-                
+
                 # Update correlation fields
                 if not correlation.queue_id:
                     correlation.queue_id = queue_id
-                
+
                 # Mark as complete
                 correlation.is_complete = True
                 correlation.last_seen = datetime.utcnow()
-                
+
                 db.commit()
                 completed_count += 1
-                
-                logger.info(f"[OK] Completed correlation for Message-ID {message_id[:50]} "
-                           f"(Queue: {queue_id}, {len(all_postfix_logs)} Postfix logs)")
-                
+
+                logger.info(
+                    f"[OK] Completed correlation for Message-ID {message_id[:50]} "
+                    f"(Queue: {queue_id}, {len(all_postfix_logs)} Postfix logs)"
+                )
+
             except Exception as e:
                 logger.error(f"Error completing correlation {correlation.id}: {e}")
                 db.rollback()
                 continue
-        
-        logger.info(f"Background completion job finished: {completed_count} correlations completed")
+
+        logger.info(
+            f"Background completion job finished: {completed_count} correlations completed"
+        )
         return completed_count
-        
+
     except Exception as e:
         logger.error(f"Error in complete_incomplete_correlations: {e}")
         return 0

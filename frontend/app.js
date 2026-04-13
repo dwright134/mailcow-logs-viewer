@@ -845,7 +845,7 @@ function renderMessagesData(data) {
                                 </svg>
                                 <span class="text-sm text-gray-600 dark:text-gray-300">${escapeHtml(msg.recipient || 'Unknown')}</span>
                             </div>
-                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate" title="${escapeHtml(msg.subject || 'No subject')}">${escapeHtml(msg.subject || 'No subject')}</p>
+                            <p class="text-xs text-gray-500 dark:text-gray-400 truncate" title="${escapeHtml(msg.subject || (msg.is_postscreen_reject ? 'Postscreen reject' : 'No subject'))}">${escapeHtml(msg.subject || (msg.is_postscreen_reject ? 'Postscreen reject' : 'No subject'))}</p>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 flex-shrink-0 sm:justify-end">
                             ${(() => {
@@ -860,7 +860,7 @@ function renderMessagesData(data) {
                         </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                        <span>${formatTime(msg.last_seen)}</span>
+                        <span>${formatTime(msg.first_seen)}</span>
                         ${msg.queue_id ? `<span class="font-mono" title="Queue ID">Q: ${msg.queue_id}</span>` : ''}
                         ${msg.message_id ? `<span class="font-mono truncate max-w-xs" title="Message ID: ${escapeHtml(msg.message_id)}">MID: ${escapeHtml(msg.message_id.substring(0, 20))}${msg.message_id.length > 20 ? '...' : ''}</span>` : ''}
                         ${msg.spam_score !== null ? `<span>Score: <span class="${msg.spam_score >= 15 ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-gray-600 dark:text-gray-300'}">${msg.spam_score.toFixed(1)}</span></span>` : ''}
@@ -2752,7 +2752,7 @@ async function loadMessages(page = 1) {
                                     </svg>
                                     <span class="text-sm text-gray-600 dark:text-gray-300">${escapeHtml(msg.recipient || 'Unknown')}</span>
                                 </div>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate" title="${escapeHtml(msg.subject || 'No subject')}">${escapeHtml(msg.subject || 'No subject')}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate" title="${escapeHtml(msg.subject || (msg.is_postscreen_reject ? 'Postscreen reject' : 'No subject'))}">${escapeHtml(msg.subject || (msg.is_postscreen_reject ? 'Postscreen reject' : 'No subject'))}</p>
                             </div>
                             <div class="flex flex-wrap items-center gap-2 flex-shrink-0 sm:justify-end">
                                 ${(() => {
@@ -2767,7 +2767,7 @@ async function loadMessages(page = 1) {
                             </div>
                         </div>
                         <div class="flex flex-wrap items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                            <span>${formatTime(msg.last_seen)}</span>
+                            <span>${formatTime(msg.first_seen)}</span>
                             ${msg.queue_id ? `<span class="font-mono" title="Queue ID">Q: ${msg.queue_id}</span>` : ''}
                             ${msg.message_id ? `<span class="font-mono truncate max-w-xs" title="Message ID: ${escapeHtml(msg.message_id)}">MID: ${escapeHtml(msg.message_id.substring(0, 20))}${msg.message_id.length > 20 ? '...' : ''}</span>` : ''}
                             ${msg.spam_score !== null ? `<span>Score: <span class="${msg.spam_score >= 15 ? 'text-red-600 dark:text-red-400 font-semibold' : 'text-gray-600 dark:text-gray-300'}">${msg.spam_score.toFixed(1)}</span></span>` : ''}
@@ -3723,7 +3723,7 @@ async function viewPostfixDetails(queueId) {
 
         if (data.logs && data.logs.length > 0) {
             // Sort logs by time
-            const sortedLogs = data.logs.sort((a, b) => new Date(a.time) - new Date(b.time));
+            const sortedLogs = sortPostfixLogsForTimeline(data.logs);
 
             // Extract key information
             let sender = null, recipient = null;
@@ -3750,6 +3750,7 @@ async function viewPostfixDetails(queueId) {
 
             // Update Security tab indicator
             updateSecurityTabIndicator(currentModalData);
+            updateAnalysisTabLabel(currentModalData);
 
             // Reset modal tabs
             document.querySelectorAll('[id^="modal-tab-"]').forEach(btn => {
@@ -3805,6 +3806,115 @@ function switchModalTab(tab) {
     }
 }
 
+function updateAnalysisTabLabel(data) {
+    const analysisTab = document.getElementById('modal-tab-spam');
+    if (!analysisTab) return;
+
+    const label = data && data.is_postscreen_reject ? 'Postscreen' : 'Spam Analysis';
+    analysisTab.innerHTML = `<span class="text-xs sm:text-sm font-medium leading-tight">${label}</span>`;
+}
+
+function sortPostfixLogsForTimeline(logs) {
+    return [...logs].sort((a, b) => {
+        const timeDiff = new Date(a.time) - new Date(b.time);
+        if (timeDiff !== 0) {
+            return timeDiff;
+        }
+
+        const aIsConnect = a.message && a.message.startsWith('CONNECT from ');
+        const bIsConnect = b.message && b.message.startsWith('CONNECT from ');
+        if (aIsConnect && !bIsConnect) {
+            return -1;
+        }
+        if (!aIsConnect && bIsConnect) {
+            return 1;
+        }
+
+        return 0;
+    });
+}
+
+async function copyTextToClipboard(event, element) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    const value = element?.dataset?.copyValue;
+    if (!value) {
+        return;
+    }
+
+    let copied = false;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(value);
+            copied = true;
+        }
+    } catch (error) {
+        console.error('Clipboard write failed:', error);
+    }
+
+    if (!copied) {
+        const input = document.createElement('textarea');
+        input.value = value;
+        input.setAttribute('readonly', '');
+        input.style.position = 'absolute';
+        input.style.left = '-9999px';
+        document.body.appendChild(input);
+        input.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(input);
+    }
+
+    const originalTitle = element.getAttribute('title') || 'Click to copy';
+    element.setAttribute('title', copied ? 'Copied' : 'Copy failed');
+    if (copied) {
+        element.dataset.copied = 'true';
+    }
+
+    window.setTimeout(() => {
+        element.setAttribute('title', originalTitle);
+        delete element.dataset.copied;
+    }, 1200);
+}
+
+function renderCopyableValue(value, options = {}) {
+    if (value === null || value === undefined || value === '') {
+        return '<span class="mt-1 block text-sm text-gray-500 dark:text-gray-400">-</span>';
+    }
+
+    const text = String(value);
+    const sizeClass = options.sizeClass || 'text-sm';
+    const toneClass = options.toneClass || 'text-gray-900 dark:text-white';
+    const weightClass = options.weightClass || 'font-semibold';
+    const extraClass = options.extraClass || '';
+    const valueClasses = [
+        'mt-1',
+        'min-w-0',
+        'transition-colors',
+        sizeClass,
+        toneClass,
+        weightClass,
+        extraClass,
+    ].filter(Boolean).join(' ');
+
+    return `
+        <button
+            type="button"
+            class="group inline-flex max-w-full items-start gap-1.5 text-left hover:text-blue-600 dark:hover:text-blue-400"
+            onclick="copyTextToClipboard(event, this)"
+            data-copy-value="${escapeHtml(text)}"
+            title="Click to copy"
+        >
+            <span class="${valueClasses}">${escapeHtml(text)}</span>
+            <svg class="mt-1 h-3.5 w-3.5 flex-shrink-0 text-gray-400 opacity-0 transition-opacity group-hover:opacity-100 group-[&[data-copied='true']]:opacity-100" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 10h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+            </svg>
+        </button>
+    `;
+}
+
 async function viewMessageDetails(correlationKey) {
     if (!correlationKey) {
         console.error('No correlation key provided');
@@ -3841,6 +3951,7 @@ async function viewMessageDetails(correlationKey) {
 
         // Update Security tab indicator
         updateSecurityTabIndicator(data);
+        updateAnalysisTabLabel(data);
 
         document.querySelectorAll('[id^="modal-tab-"]').forEach(btn => {
             btn.classList.remove('active');
@@ -3901,11 +4012,11 @@ function renderOverviewTab(content, data) {
                     <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Recipients (${recipientsToDisplay.length})</p>
                     <div class="mt-2 space-y-1 max-h-32 overflow-y-auto">
                         ${recipientsToDisplay.map(r => `
-                            <div class="flex items-center gap-2">
+                            <div class="flex items-start gap-2">
                                 <svg class="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
                                 </svg>
-                                <span class="text-sm text-gray-900 dark:text-white">${copyableText(r)}</span>
+                                ${renderCopyableValue(r, { weightClass: '', extraClass: 'break-all' })}
                             </div>
                         `).join('')}
                     </div>
@@ -3915,7 +4026,7 @@ function renderOverviewTab(content, data) {
             recipientsRightColumn = `
                 <div>
                     <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">To</p>
-                    <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${copyableText(recipientsToDisplay[0] || '-')}</p>
+                    ${renderCopyableValue(recipientsToDisplay[0] || '-')}
                 </div>
             `;
         }
@@ -3923,10 +4034,99 @@ function renderOverviewTab(content, data) {
         recipientsRightColumn = `
             <div>
                 <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">To</p>
-                <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${copyableText(data.recipient)}</p>
+                ${renderCopyableValue(data.recipient)}
             </div>
         `;
     }
+
+    const postscreenSummary = data.postscreen_summary || null;
+    const quickSummaryHtml = postscreenSummary ? `
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 sm:p-4 mt-1">
+            <h4 class="text-sm sm:text-md font-semibold text-gray-900 dark:text-white mb-3">Postscreen Summary</h4>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="text-center">
+                    <p class="text-lg sm:text-2xl font-bold text-red-600 dark:text-red-400">${escapeHtml(String(postscreenSummary.dnsbl_rank ?? '-'))}</p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">DNSBL Rank</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-sm sm:text-lg font-semibold text-gray-900 dark:text-white truncate">${escapeHtml(postscreenSummary.rejecting_dnsbl || '-')}</p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Rejecting List</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-sm sm:text-lg font-semibold text-gray-900 dark:text-white truncate">${escapeHtml(postscreenSummary.client_ip || '-')}</p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Client IP</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-sm sm:text-lg font-semibold text-gray-900 dark:text-white">${postscreenSummary.recipients?.length || recipientsToDisplay.length || 0}</p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Recipients</p>
+                </div>
+            </div>
+            ${postscreenSummary.reject_reason ? `<p class="text-xs text-gray-600 dark:text-gray-300 mt-3 break-words">${escapeHtml(postscreenSummary.reject_reason)}</p>` : ''}
+            <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 text-center mt-3">
+                See "Postscreen" tab for full session details
+            </p>
+        </div>
+    ` : data.rspamd ? `
+        <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 sm:p-4 mt-1">
+            <h4 class="text-sm sm:text-md font-semibold text-gray-900 dark:text-white mb-3">Quick Spam Summary</h4>
+            <div class="grid grid-cols-3 gap-2">
+                <div class="text-center">
+                    <p class="text-lg sm:text-2xl font-bold ${data.rspamd.score >= (data.rspamd.required_score || 15) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}">
+                        ${data.rspamd.score.toFixed(2)}
+                    </p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Score</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-sm sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
+                        ${data.rspamd.action}
+                    </p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Action</p>
+                </div>
+                <div class="text-center">
+                    <p class="text-sm sm:text-lg font-semibold ${data.rspamd.is_spam ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}">
+                        ${data.rspamd.is_spam ? 'SPAM' : 'CLEAN'}
+                    </p>
+                    <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Class</p>
+                </div>
+            </div>
+            <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 text-center mt-3">
+                See "Spam Analysis" tab for details
+            </p>
+        </div>
+    ` : data.postfix && data.postfix.length > 0 ? `
+        <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mt-3">
+            <div class="flex items-start gap-3">
+                <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+                </svg>
+                <div>
+                    <p class="text-sm font-medium text-blue-900 dark:text-blue-300">Postfix Delivery Logs</p>
+                    <p class="text-xs text-blue-800 dark:text-blue-400 mt-1">Click "Logs" tab to see complete delivery timeline (${data.postfix.length} entries)</p>
+                </div>
+            </div>
+        </div>
+    ` : '';
+
+    const additionalDetailsHtml = data.rspamd ? `
+        <div class="flex-shrink-0 mt-auto pt-3 border-t border-gray-200 dark:border-gray-700">
+            <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                <div class="flex items-start gap-3">
+                    <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+                    </svg>
+                    <div class="flex-1">
+                        <p class="text-sm font-medium text-blue-900 dark:text-blue-300 mb-2">Additional Details</p>
+                        <div class="space-y-1 text-xs text-blue-800 dark:text-blue-400">
+                            ${data.rspamd.ip ? renderGeoIPInfo(data.rspamd, '16x12') : ''}
+                            ${data.rspamd.user ? `<div><p>Authenticated User</p>${renderCopyableValue(data.rspamd.user, { sizeClass: 'text-xs', toneClass: 'text-blue-800 dark:text-blue-400', weightClass: '', extraClass: 'break-all' })}</div>` : ''}
+                            ${data.rspamd.size ? `<p>Message Size: ${formatSize(data.rspamd.size)}</p>` : ''}
+                            ${data.rspamd.has_auth ? `<p>Authentication: Verified (MAILCOW_AUTH)</p>` : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    ` : '';
 
     content.innerHTML = `
         <div class="flex flex-col h-full">
@@ -3938,7 +4138,7 @@ function renderOverviewTab(content, data) {
                         <div class="space-y-3">
                             <div>
                                 <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">From</p>
-                                <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${copyableText(data.sender || '-')}</p>
+                                ${renderCopyableValue(data.sender || '-')}
                             </div>
                             ${data.subject && data.subject !== 'Postfix Log Details' ? `
                                 <div class="min-w-0">
@@ -3962,79 +4162,21 @@ function renderOverviewTab(content, data) {
                             ${data.queue_id ? `
                                 <div>
                                     <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Queue ID</p>
-                                    <p class="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1">${copyableText(data.queue_id)}</p>
+                                    ${renderCopyableValue(data.queue_id, { sizeClass: 'text-xs', toneClass: 'text-gray-600 dark:text-gray-400', weightClass: '', extraClass: 'font-mono break-all' })}
                                 </div>
                             ` : ''}
                             ${data.message_id ? `
                                 <div>
                                     <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Message ID</p>
-                                    <p class="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1 break-all">${copyableText(data.message_id)}</p>
+                                    ${renderCopyableValue(data.message_id, { sizeClass: 'text-xs', toneClass: 'text-gray-600 dark:text-gray-400', weightClass: '', extraClass: 'font-mono break-all' })}
                                 </div>
                             ` : ''}
                         </div>
                     </div>
                 </div>
-                ${data.rspamd ? `
-                    <div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 sm:p-4 mt-1">
-                        <h4 class="text-sm sm:text-md font-semibold text-gray-900 dark:text-white mb-3">Quick Spam Summary</h4>
-                        <div class="grid grid-cols-3 gap-2">
-                            <div class="text-center">
-                                <p class="text-lg sm:text-2xl font-bold ${data.rspamd.score >= (data.rspamd.required_score || 15) ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}">
-                                    ${data.rspamd.score.toFixed(2)}
-                                </p>
-                                <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Score</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-sm sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
-                                    ${data.rspamd.action}
-                                </p>
-                                <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Action</p>
-                            </div>
-                            <div class="text-center">
-                                <p class="text-sm sm:text-lg font-semibold ${data.rspamd.is_spam ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}">
-                                    ${data.rspamd.is_spam ? 'SPAM' : 'CLEAN'}
-                                </p>
-                                <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 mt-1">Class</p>
-                            </div>
-                        </div>
-                        <p class="text-[10px] sm:text-xs text-gray-500 dark:text-gray-400 text-center mt-3">
-                            See "Spam Analysis" tab for details
-                        </p>
-                    </div>
-                ` : data.postfix && data.postfix.length > 0 ? `
-                    <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 mt-3">
-                    <div class="flex items-start gap-3">
-                        <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
-                        </svg>
-                        <div>
-                            <p class="text-sm font-medium text-blue-900 dark:text-blue-300">Postfix Delivery Logs</p>
-                            <p class="text-xs text-blue-800 dark:text-blue-400 mt-1">Click "Logs" tab to see complete delivery timeline (${data.postfix.length} entries)</p>
-                        </div>
-                    </div>
-                    </div>
-                ` : ''}
+                ${quickSummaryHtml}
             </div>
-            ${data.rspamd ? `
-                <div class="flex-shrink-0 mt-auto pt-3 border-t border-gray-200 dark:border-gray-700">
-                    <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                        <div class="flex items-start gap-3">
-                            <svg class="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
-                            </svg>
-                            <div class="flex-1">
-                                <p class="text-sm font-medium text-blue-900 dark:text-blue-300 mb-2">Additional Details</p>
-                                <div class="space-y-1 text-xs text-blue-800 dark:text-blue-400">
-                                    ${data.rspamd.ip ? renderGeoIPInfo(data.rspamd, '16x12') : ''}
-                                    ${data.rspamd.user ? `<p>Authenticated User: ${copyableText(data.rspamd.user)}</p>` : ''}
-                                    ${data.rspamd.size ? `<p>Message Size: ${formatSize(data.rspamd.size)}</p>` : ''}
-                                    ${data.rspamd.has_auth ? `<p>Authentication: Verified (MAILCOW_AUTH)</p>` : ''}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            ` : ''}
+            ${additionalDetailsHtml}
         </div>
     `;
 }
@@ -4052,13 +4194,15 @@ function renderPostfixTab(content, data) {
         return;
     }
 
+    const sortedPostfixLogs = sortPostfixLogsForTimeline(data.postfix);
+
     // Extract key information from logs
     let sender = null, clientIp = null, relay = null;
     let messageId = null, finalStatus = null, totalDelay = null, queueId = null;
     let errorReasons = [];
     let recipientsFromPostfix = new Set(); // Collect all unique recipients from Postfix logs
 
-    data.postfix.forEach(log => {
+    sortedPostfixLogs.forEach(log => {
         if (log.queue_id && !queueId) queueId = log.queue_id;
         if (log.sender && !sender) sender = log.sender;
         if (log.relay && !relay) relay = log.relay;
@@ -4137,18 +4281,22 @@ function renderPostfixTab(content, data) {
                     ${sender ? `
                         <div>
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">From</p>
-                            <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${copyableText(sender)}</p>
+                            ${renderCopyableValue(sender)}
                         </div>
                     ` : ''}
                     ${recipientsFromPostfix.size > 0 ? `
                         <div>
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">To (${recipientsFromPostfix.size})</p>
-                            <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${recipientsFromPostfix.size === 1 ? copyableText(Array.from(recipientsFromPostfix)[0]) : `${recipientsFromPostfix.size} recipients`}</p>
+                            ${recipientsFromPostfix.size === 1
+                                ? renderCopyableValue(Array.from(recipientsFromPostfix)[0])
+                                : `<p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${recipientsFromPostfix.size} recipients</p>`}
                         </div>
                     ` : (data.recipients && data.recipients.length > 0 ? `
                         <div>
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">To (${data.recipients.length})</p>
-                            <p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${data.recipients.length === 1 ? copyableText(data.recipients[0]) : `${data.recipients.length} recipients`}</p>
+                            ${data.recipients.length === 1
+                                ? renderCopyableValue(data.recipients[0])
+                                : `<p class="text-sm font-semibold text-gray-900 dark:text-white mt-1">${data.recipients.length} recipients</p>`}
                         </div>
                     ` : '')}
                     ${clientIp ? `
@@ -4160,7 +4308,7 @@ function renderPostfixTab(content, data) {
                     ${queueId ? `
                         <div>
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Queue ID</p>
-                            <p class="text-sm font-mono font-semibold text-gray-900 dark:text-white mt-1">${copyableText(queueId)}</p>
+                            ${renderCopyableValue(queueId, { weightClass: '', extraClass: 'font-mono break-all' })}
                         </div>
                     ` : ''}
                     ${finalStatus ? `
@@ -4178,7 +4326,7 @@ function renderPostfixTab(content, data) {
                     ${messageId ? `
                         <div class="md:col-span-2">
                             <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">Message ID</p>
-                            <p class="text-xs font-mono text-gray-700 dark:text-gray-300 mt-1 break-all">${copyableText(messageId)}</p>
+                            ${renderCopyableValue(messageId, { sizeClass: 'text-xs', toneClass: 'text-gray-700 dark:text-gray-300', weightClass: '', extraClass: 'font-mono break-all' })}
                         </div>
                     ` : ''}
                 </div>
@@ -4209,10 +4357,10 @@ function renderPostfixTab(content, data) {
             <div>
                 <div class="flex items-center justify-between mb-3">
                     <h4 class="text-md font-semibold text-gray-900 dark:text-white">Complete Log Timeline</h4>
-                    <span class="text-xs text-gray-500 dark:text-gray-400">${data.postfix.length} entries</span>
+                    <span class="text-xs text-gray-500 dark:text-gray-400">${sortedPostfixLogs.length} entries</span>
                 </div>
                 <div class="space-y-2 max-h-96 overflow-y-auto">
-                    ${data.postfix.map(log => `
+                    ${sortedPostfixLogs.map(log => `
                         <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition">
                             <div class="flex justify-between items-start mb-1">
                                 <div class="flex items-center gap-2 flex-wrap">
@@ -4248,6 +4396,68 @@ function toggleAccordion(id) {
 }
 
 function renderSpamTab(content, data) {
+    if (data.is_postscreen_reject && data.postscreen_summary) {
+        const summary = data.postscreen_summary;
+        const dnsblHits = summary.dnsbl_hits || [];
+        const recipients = summary.recipients || data.recipients || [];
+
+        content.innerHTML = `
+            <div class="space-y-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div class="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg">
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Client</p>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white font-mono break-all">${escapeHtml(summary.client_ip || '-')}</p>
+                        ${summary.client_port ? `<p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Port ${summary.client_port}</p>` : ''}
+                        ${summary.helo ? `<p class="text-xs text-gray-500 dark:text-gray-400 mt-2 break-all">HELO ${escapeHtml(summary.helo)}</p>` : ''}
+                    </div>
+                    <div class="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg">
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">DNSBL Verdict</p>
+                        <p class="text-2xl font-bold text-red-600 dark:text-red-400">${escapeHtml(String(summary.dnsbl_rank ?? '-'))}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Final rank</p>
+                        ${summary.rejecting_dnsbl ? `<p class="text-xs text-gray-700 dark:text-gray-300 mt-2 break-all">Rejected by ${escapeHtml(summary.rejecting_dnsbl)}</p>` : ''}
+                    </div>
+                    <div class="bg-gray-50 dark:bg-gray-700/50 p-4 rounded-lg">
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-2">Envelope</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400">From</p>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white break-all">${escapeHtml(summary.sender || data.sender || '-')}</p>
+                        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">Recipients (${recipients.length})</p>
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white">${recipients.length}</p>
+                    </div>
+                </div>
+
+                ${summary.reject_reason ? `
+                    <div class="border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/20 rounded-lg p-4">
+                        <h4 class="text-md font-semibold text-red-800 dark:text-red-300 mb-2">Reject Reason</h4>
+                        <p class="text-sm text-red-700 dark:text-red-200 break-words">${escapeHtml(summary.reject_reason)}</p>
+                    </div>
+                ` : ''}
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-md font-semibold text-gray-900 dark:text-white mb-3">Recipients</h4>
+                        <div class="space-y-2 max-h-64 overflow-y-auto">
+                            ${recipients.length > 0 ? recipients.map(recipient => `
+                                <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded text-sm text-gray-900 dark:text-white break-all">${escapeHtml(recipient)}</div>
+                            `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No recipients found</p>'}
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-md font-semibold text-gray-900 dark:text-white mb-3">DNSBL Hits</h4>
+                        <div class="space-y-2 max-h-64 overflow-y-auto">
+                            ${dnsblHits.length > 0 ? dnsblHits.map(hit => `
+                                <div class="p-3 bg-gray-50 dark:bg-gray-700/50 rounded">
+                                    <p class="text-sm font-semibold text-gray-900 dark:text-white break-all">${escapeHtml(hit.domain || '-')}</p>
+                                    ${hit.result ? `<p class="text-xs text-gray-500 dark:text-gray-400 mt-1">Result ${escapeHtml(hit.result)}</p>` : ''}
+                                </div>
+                            `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No DNSBL hits captured</p>'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
     if (!data.rspamd) {
         content.innerHTML = `
             <div class="text-center py-12">
@@ -4388,6 +4598,7 @@ function closeMessageModal() {
         currentModalData = null;
         // Restore body scroll
         document.body.style.overflow = '';
+        updateAnalysisTabLabel(null);
         // Reset security tab indicator
         const securityTab = document.getElementById('modal-tab-netfilter');
         if (securityTab) {
@@ -9554,4 +9765,3 @@ function closeContainerLogsModal() {
 function loadMailboxStatsPage(page) {
     loadMailboxStatsList(page);
 }
-
